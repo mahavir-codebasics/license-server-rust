@@ -106,7 +106,6 @@ async fn build_app(cfg: &Config) -> Result<Router> {
     Ok(Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
-        .route("/", get(root))
         .merge(api))
 }
 
@@ -139,17 +138,6 @@ async fn healthz() -> Response {
 async fn readyz() -> Response {
     // Readiness: in Phase 0 we're always ready; later this probes DB+Redis.
     (StatusCode::OK, Json(json!({ "status": "ready" }))).into_response()
-}
-
-async fn root() -> Response {
-    (
-        StatusCode::OK,
-        Json(json!({
-            "name": env!("CARGO_PKG_NAME"),
-            "version": env!("CARGO_PKG_VERSION"),
-        })),
-    )
-        .into_response()
 }
 
 /// Best-effort preflight checks for `all` role: connect to Redis, log
