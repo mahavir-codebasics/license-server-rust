@@ -1,0 +1,21 @@
+[package]
+name = "license-grpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+license-domain.workspace = true
+license-db.workspace = true
+tonic.workspace = true
+prost.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+uuid.workspace = true
+time.workspace = true
+
+[build-dependencies]
+tonic-build.workspace = true

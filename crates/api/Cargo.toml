@@ -1,0 +1,23 @@
+[package]
+name = "license-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+license-domain.workspace = true
+license-crypto.workspace = true
+license-db.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+hyper.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+time.workspace = true
+bytes.workspace = true

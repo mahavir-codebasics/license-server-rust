@@ -1,0 +1,146 @@
+# license-server-rust workspace
+#
+# A performance-first, multi-tenant software licensing & distribution server.
+# Rust alternative to keygen-sh/keygen-api (not wire-compatible; own SDK).
+#
+# Crates (layered, dependency flows downward):
+#   domain  -> pure entities + business rules, no I/O
+#   crypto  -> license-key signing + license-file certificates (depends on domain)
+#   db      -> Repository trait + {pg, mysql, sqlite} impls (depends on domain)
+#   api     -> axum REST handlers (depends on domain, db, crypto)
+#   grpc    -> tonic hot path (depends on domain, db)
+#   jobs    -> apalis workers over Redis (depends on domain, db)
+#   sso     -> OIDC client (depends on domain)
+#   bin     -> wires everything together, role dispatch
+[workspace]
+resolver = "2"
+members = [
+    "crates/domain",
+    "crates/crypto",
+    "crates/db",
+    "crates/api",
+    "crates/grpc",
+    "crates/jobs",
+    "crates/sso",
+    "crates/bin",
+]
+default-members = ["crates/bin"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/your-org/license-server-rust"
+rust-version = "1.82"
+
+# Centralized dependency versions. Crates reference these with
+# `foo.workspace = true`. Bump here, all crates follow.
+[workspace.dependencies]
+# Core async runtime
+tokio = { version = "1.41", features = ["full"] }
+tokio-util = "0.7"
+tokio-stream = "0.1"
+futures = "0.3"
+async-trait = "0.1"
+bytes = "1.7"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# IDs & time
+uuid = { version = "1.11", features = ["v7", "serde"] }
+time = { version = "0.3", features = ["serde", "serde-human-readable"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
+
+# Tracing / telemetry
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Web framework (REST)
+axum = { version = "0.7", features = ["macros"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip", "request-id"] }
+hyper = "1"
+
+# gRPC
+tonic = { version = "0.12", features = ["tls"] }
+prost = "0.13"
+tonic-build = "0.12"
+
+# Database
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "macros",
+    "uuid",
+    "time",
+    "json",
+] }
+# Backend toggles are enabled per-crate (db enables postgres/mysql/sqlite).
+
+# Redis (jobs + cache + rate limiting)
+redis = { version = "0.27", features = ["tokio-comp", "aio", "connection-manager"] }
+
+# Background jobs (apalis 0.7 split backends into separate crates)
+apalis = "0.7"
+apalis-redis = "0.7"
+apalis-cron = "0.7"
+
+# Cryptography — modern, Ed25519-first
+ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8", "pem"] }
+p256 = { version = "0.13", features = ["ecdsa", "pem", "pkcs8"] }
+rsa = { version = "0.9", features = ["sha2"] }
+sha2 = "0.10"
+hmac = "0.12"
+aes-gcm = "0.10"
+rand = "0.8"
+rand_core = "0.6"
+base64 = "0.22"
+pem = "3"
+subtle = "2"
+jsonwebtoken = "9"
+zeroize = { version = "1", features = ["derive"] }
+
+# Config
+figment = { version = "0.10", features = ["env", "toml"] }
+
+# HTTP client (SSO, webhooks)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+
+# OIDC
+openidconnect = "3"
+
+# Utilities
+once_cell = "1"
+parking_lot = "0.12"
+url = { version = "2", features = ["serde"] }
+regex = "1"
+itertools = "0.13"
+hex = "0.4"
+
+# Internal crates
+license-domain = { path = "crates/domain" }
+license-crypto = { path = "crates/crypto" }
+license-db = { path = "crates/db" }
+license-api = { path = "crates/api" }
+license-grpc = { path = "crates/grpc" }
+license-jobs = { path = "crates/jobs" }
+license-sso = { path = "crates/sso" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+# Faster dev builds
+[profile.dev]
+opt-level = 0
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 2

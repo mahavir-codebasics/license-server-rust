@@ -1,0 +1,94 @@
+# docker compose for local development & single-command self-hosting.
+#
+# `docker compose up` brings up: Postgres, Redis, the Rust API (role=all),
+# and (once the UI exists) the Next.js admin console.
+#
+# Swap the database backend by editing the `LICENSE_SERVER__DATABASE__URL`
+# scheme to `mysql://` or `sqlite:` — see .env.example.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: license
+      POSTGRES_PASSWORD: license
+      POSTGRES_DB: license
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U license -d license"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mysql:
+    image: mysql:8
+    profiles: ["mysql"]   # opt-in: `docker compose --profile mysql up`
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: license
+      MYSQL_USER: license
+      MYSQL_PASSWORD: license
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysqldata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      LICENSE_SERVER__ROLE: all
+      LICENSE_SERVER__HTTP__HOST: 0.0.0.0
+      LICENSE_SERVER__HTTP__PORT: "8080"
+      LICENSE_SERVER__GRPC__HOST: 0.0.0.0
+      LICENSE_SERVER__GRPC__PORT: "9090"
+      LICENSE_SERVER__DATABASE__URL: postgresql://license:license@postgres:5432/license
+      LICENSE_SERVER__REDIS__URL: redis://redis:6379/0
+      # OVERRIDE in production. This dev value is only for local compose.
+      LICENSE_SERVER__CRYPTO__MASTER_KEY: deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+      LICENSE_SERVER__LOG__FORMAT: json
+      LICENSE_SERVER__LOG__FILTER: info,license_server=debug
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+
+  # Admin UI (Next.js). Populated in Phase 7.
+  ui:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.ui
+    profiles: ["ui"]
+    depends_on:
+      - api
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8080/v1
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
+  mysqldata:

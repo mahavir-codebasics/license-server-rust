@@ -1,0 +1,31 @@
+[package]
+name = "license-crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+license-domain.workspace = true
+ed25519-dalek.workspace = true
+p256.workspace = true
+rsa.workspace = true
+sha2.workspace = true
+hmac.workspace = true
+aes-gcm.workspace = true
+rand.workspace = true
+rand_core.workspace = true
+base64.workspace = true
+pem.workspace = true
+subtle.workspace = true
+jsonwebtoken.workspace = true
+zeroize.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+uuid.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+proptest = "1"

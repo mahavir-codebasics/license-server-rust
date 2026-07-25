@@ -1,0 +1,24 @@
+[package]
+name = "license-jobs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+license-domain.workspace = true
+license-db.workspace = true
+apalis.workspace = true
+apalis-redis.workspace = true
+apalis-cron.workspace = true
+redis.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+uuid.workspace = true
+reqwest.workspace = true
+hmac.workspace = true
+sha2.workspace = true

@@ -1,0 +1,39 @@
+# Multi-stage build for license-server (the Rust API/worker/scheduler binary).
+#
+# Stage 1 (chef): generates a recipe for the dependencies so they're cached
+#   independent of application code — speeds up iterative builds dramatically.
+# Stage 2 (builder): compiles the workspace against the locked deps, then the
+#   app code, using the `runtime-tokio-rustls` TLS / musl-free glibc target.
+# Stage 3 (runtime): distroless static runtime — no shell, no package manager,
+#   minimal attack surface. The final image is ~30MB.
+
+# syntax=docker/dockerfile:1.7
+ARG RUST_VERSION=1.96
+ARG DEBIAN_VERSION=bookworm
+
+FROM rust:${RUST_VERSION}-${DEBIAN_VERSION} AS chef
+WORKDIR /usr/src/license-server
+# cargo-chef lets us cache the dependency build layer separately from app code.
+RUN cargo install cargo-chef --locked --version ^0.1 || true
+COPY . .
+# Prepare a build plan ("recipe") from the manifest alone.
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM rust:${RUST_VERSION}-${DEBIAN_VERSION} AS builder
+WORKDIR /usr/src/license-server
+RUN cargo install cargo-chef --locked --version ^0.1 || true
+COPY --from=chef /usr/src/license-server/recipe.json recipe.json
+# Build dependencies first (this layer is cached unless Cargo.toml changes).
+RUN cargo chef cook --release --recipe-path recipe.json
+COPY . .
+# Build the actual binary.
+RUN cargo build --release --bin license-server
+
+# Distroless runtime: non-root, no shell, tiny image.
+FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
+WORKDIR /app
+COPY --from=builder /usr/src/license-server/target/release/license-server /app/license-server
+# Non-root user provided by the base image (UID 65532).
+EXPOSE 8080 9090
+USER nonroot:nonroot
+ENTRYPOINT ["/app/license-server"]

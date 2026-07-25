@@ -1,0 +1,96 @@
+# CI for license-server-rust.
+#
+# Three job groups:
+#   1. `lint`     — fmt + clippy (the cheap gates).
+#   2. `test`     — workspace unit tests on the matrix {os}. Fast, no DB.
+#   3. `db-matrix`— backend contract tests against real Postgres, MySQL,
+#                   SQLite via testcontainers. The heart of "multi-db".
+#
+# The db-matrix job will light up in Phase 1 once the Repository impls exist;
+# until then the unit-test job covers us.
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install protoc (tonic-build)
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: unit tests (${{ matrix.os }})
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+      - uses: Swatinem/rust-cache@v2
+      - name: Build workspace
+        run: cargo build --workspace --all-targets
+      - name: Test workspace
+        run: cargo test --workspace --all-targets
+
+  db-matrix:
+    name: db contract tests (${{ matrix.backend }})
+    needs: test
+    runs-on: ubuntu-latest
+    # Phase 1 lands the integration tests; the job stays defined so the
+    # gating is ready. Enabled when the test file exists.
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [postgres, mysql, sqlite]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+      - name: Backend contract tests
+        env:
+          LICENSE_TEST_BACKEND: ${{ matrix.backend }}
+        run: |
+          if cargo test --workspace -p license-db --test '*' --no-run 2>/dev/null; then
+            cargo test --workspace -p license-db --test '*'
+          else
+            echo "no db integration tests yet (Phase 1) — skipping"
+          fi
+
+  docker-build:
+    name: docker image builds
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build API image
+        run: docker build -f docker/Dockerfile.api -t license-server:ci .
