@@ -126,8 +126,8 @@ impl Ed25519Keypair {
 
     pub fn from_pkcs8_pem(pem: &str) -> Result<Self> {
         use ed25519_dalek::pkcs8::DecodePrivateKey;
-        let signing = SigningKey::from_pkcs8_pem(pem)
-            .map_err(|e| CryptoError::Decoding(e.to_string()))?;
+        let signing =
+            SigningKey::from_pkcs8_pem(pem).map_err(|e| CryptoError::Decoding(e.to_string()))?;
         Ok(Self { signing })
     }
 
@@ -449,7 +449,8 @@ pub fn verify_license_key(scheme: KeyScheme, public: &PublicKey, key: &str) -> R
                 .try_into()
                 .map_err(|_| CryptoError::SignatureInvalid)?;
             let sig = Signature::from_bytes(&sig_bytes);
-            vk.verify(payload, &sig).map_err(|_| CryptoError::SignatureInvalid)
+            vk.verify(payload, &sig)
+                .map_err(|_| CryptoError::SignatureInvalid)
         }
         KeyScheme::EcdsaP256 => {
             use p256::ecdsa::signature::Verifier;

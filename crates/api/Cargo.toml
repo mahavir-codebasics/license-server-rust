@@ -21,3 +21,8 @@ tracing.workspace = true
 uuid.workspace = true
 time.workspace = true
 bytes.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+tower = { workspace = true, features = ["util"] }
+http = "1"

@@ -133,8 +133,16 @@ mod tests {
         assert_ne!(a, b, "fresh nonce should make ciphertexts differ");
         // both still decrypt to the same key
         assert_eq!(
-            store.open(KeyAlgorithm::Ed25519, &a).unwrap().public_pem().unwrap(),
-            store.open(KeyAlgorithm::Ed25519, &b).unwrap().public_pem().unwrap(),
+            store
+                .open(KeyAlgorithm::Ed25519, &a)
+                .unwrap()
+                .public_pem()
+                .unwrap(),
+            store
+                .open(KeyAlgorithm::Ed25519, &b)
+                .unwrap()
+                .public_pem()
+                .unwrap(),
         );
     }
 

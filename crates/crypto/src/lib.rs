@@ -30,12 +30,10 @@ pub mod store;
 
 pub use error::{CryptoError, Result};
 pub use key::{
-    sign_license_key, verify_license_key, Ed25519Keypair, EcdsaP256Keypair, KeyAlgorithm,
+    sign_license_key, verify_license_key, EcdsaP256Keypair, Ed25519Keypair, KeyAlgorithm,
     KeyEncoding, KeyPair, KeyScheme, PublicKey, RsaKeypair, SecretKey, SignedKey,
 };
-pub use license_file::{
-    Algorithm, Certificate, Encryption, LicenseFileError, SignatureScheme,
-};
+pub use license_file::{Algorithm, Certificate, Encryption, LicenseFileError, SignatureScheme};
 pub use store::{KeyStore, LocalKeyStore};
 
 /// SHA-256 of `data`, hex-encoded. Used for license-key and token hashing

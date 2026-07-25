@@ -67,7 +67,10 @@ impl Algorithm {
             "rsa-sha256" => SignatureScheme::RsaSha256,
             other => return Err(CryptoError::Unsupported(other.into())),
         };
-        Ok(Self { encryption, signature })
+        Ok(Self {
+            encryption,
+            signature,
+        })
     }
 
     pub fn as_str(self) -> &'static str {
@@ -213,7 +216,9 @@ pub fn verify_and_open(
 
 fn parse_pem(pem: &str) -> std::result::Result<(String, String), LicenseFileError> {
     let mut lines = pem.lines();
-    let begin = lines.next().ok_or_else(|| LicenseFileError::Malformed("empty".into()))?;
+    let begin = lines
+        .next()
+        .ok_or_else(|| LicenseFileError::Malformed("empty".into()))?;
     if !begin.starts_with("-----BEGIN LICENSE FILE") {
         return Err(LicenseFileError::Malformed("missing begin fence".into()));
     }
@@ -316,9 +321,7 @@ fn verify_blob(
             if sig.len() != 64 {
                 return Ok(false);
             }
-            let sig_bytes: [u8; 64] = sig
-                .try_into()
-                .map_err(|_| CryptoError::SignatureInvalid)?;
+            let sig_bytes: [u8; 64] = sig.try_into().map_err(|_| CryptoError::SignatureInvalid)?;
             let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
             // ed25519-dalek's verify is already constant-time; both branches
             // return a plain bool so callers can't distinguish paths by timing.
@@ -433,8 +436,7 @@ mod tests {
                 Some(&aes_key),
             )
             .unwrap();
-            let (_alg, opened) =
-                verify_and_open(&cert.pem, &kp.public(), Some(&aes_key)).unwrap();
+            let (_alg, opened) = verify_and_open(&cert.pem, &kp.public(), Some(&aes_key)).unwrap();
             assert_eq!(opened, body);
         }
     }

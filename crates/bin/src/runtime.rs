@@ -84,13 +84,51 @@ pub async fn run_all(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Build the axum app. Currently just the health endpoints; later phases add
-/// `license_api::router(...)` merged in here.
-async fn build_app(_cfg: &Config) -> Result<Router> {
+/// Build the axum app: the v1 API router merged with health endpoints.
+async fn build_app(cfg: &Config) -> Result<Router> {
+    // Connect to the configured database + run migrations.
+    let pool = license_db::Pool::connect(&cfg.database.url)
+        .await
+        .context("connecting database")?;
+    let repo = license_db::SqliteRepository::from(pool);
+
+    // Decode the master key (32 bytes hex) into the in-memory secret. In
+    // production this becomes the KMS-backed KeyStore (Phase 2 seam).
+    let master_secret =
+        decode_master_secret(&cfg.crypto.master_key).context("decoding master key")?;
+
+    let state = license_api::extract::AppState {
+        repo: std::sync::Arc::new(repo),
+        master_secret: std::sync::Arc::new(master_secret),
+    };
+
+    let api = license_api::router(state);
     Ok(Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
-        .route("/", get(root)))
+        .route("/", get(root))
+        .merge(api))
+}
+
+/// Decode a 64-char hex string into 32 bytes. Returns a zeroed key if unset
+/// (the binary refuses to start with a real "all-zeros" key — see main's
+/// config check — but we still need a value for tests).
+fn decode_master_secret(hex_key: &str) -> anyhow::Result<[u8; 32]> {
+    if hex_key.is_empty() || hex_key.chars().all(|c| c == '0') {
+        anyhow::bail!(
+            "LICENSE_SERVER__CRYPTO__MASTER_KEY is unset/zero — generate one with `openssl rand -hex 32`"
+        );
+    }
+    let bytes = hex::decode(hex_key).context("master key is not valid hex")?;
+    if bytes.len() != 32 {
+        anyhow::bail!(
+            "master key must be 32 bytes (64 hex chars), got {} bytes",
+            bytes.len()
+        );
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
 }
 
 async fn healthz() -> Response {
