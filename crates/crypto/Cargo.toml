@@ -19,6 +19,7 @@ pem.workspace = true
 subtle.workspace = true
 jsonwebtoken.workspace = true
 zeroize.workspace = true
+async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
