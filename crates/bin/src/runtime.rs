@@ -86,11 +86,12 @@ pub async fn run_all(cfg: &Config) -> Result<()> {
 
 /// Build the axum app: the v1 API router merged with health endpoints.
 async fn build_app(cfg: &Config) -> Result<Router> {
-    // Connect to the configured database + run migrations.
+    // Connect to the configured database + run migrations. The pool resolves
+    // to the right backend (SQLite/Postgres/MySQL) from the URL scheme.
     let pool = license_db::Pool::connect(&cfg.database.url)
         .await
         .context("connecting database")?;
-    let repo = license_db::SqliteRepository::from(pool);
+    let repo = pool.into_repository();
 
     // Decode the master key (32 bytes hex) into the in-memory secret. In
     // production this becomes the KMS-backed KeyStore (Phase 2 seam).
@@ -98,7 +99,7 @@ async fn build_app(cfg: &Config) -> Result<Router> {
         decode_master_secret(&cfg.crypto.master_key).context("decoding master key")?;
 
     let state = license_api::extract::AppState {
-        repo: std::sync::Arc::new(repo),
+        repo,
         master_secret: std::sync::Arc::new(master_secret),
     };
 

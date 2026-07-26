@@ -24,7 +24,6 @@ use axum::{
     response::Response,
 };
 use license_crypto::{hash_token, TokenPrefix};
-use license_domain::repository::Repository;
 use license_domain::{AccountId, Token, TokenKind};
 use std::sync::Arc;
 use time::OffsetDateTime;

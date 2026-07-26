@@ -1,15 +1,18 @@
 //! Extractors: shared app state, pagination query.
 
 use axum::extract::Query;
-use license_db::SqliteRepository;
-use license_domain::repository::PageQuery;
+use license_domain::repository::{PageQuery, Repository};
 use serde::Deserialize;
 use std::sync::Arc;
 
 /// Shared state injected into every handler.
+///
+/// `repo` is a trait object so the API works with ANY backend (SQLite,
+/// Postgres, MySQL) — the concrete impl is chosen at startup via
+/// [`license_db::Pool::connect`] and erased here.
 #[derive(Clone)]
 pub struct AppState {
-    pub repo: Arc<SqliteRepository>,
+    pub repo: Arc<dyn Repository>,
     /// Master secret used for AES-key derivation + token hashing.
     /// (In production this comes from the KMS-backed KeyStore.)
     pub master_secret: Arc<[u8; 32]>,

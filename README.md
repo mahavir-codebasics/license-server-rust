@@ -3,13 +3,13 @@
 A performance-first, multi-tenant **software-licensing & distribution server**
 written in Rust — a self-hostable alternative to [keygen-sh/keygen-api].
 
-> **Status:** Phases 0–3 complete. Domain core + license state machine,
-> SQLite data layer with verified multi-tenant isolation, full crypto
-> subsystem (Ed25519/ECDSA/RSA/JWT key signing + AES-256-GCM encrypt-then-sign
-> license files), and a working REST API (create account → product → policy
-> → sign+issue license → validate → check-out) — all tested end-to-end (49
-> tests). Next: Postgres/MySQL backends, auth+OIDC SSO, jobs/webhooks, gRPC,
-> Next.js UI. See
+> **Status:** Phases 0–4 complete. Domain core + license state machine, **all
+> three databases** (SQLite + PostgreSQL + MySQL) with verified multi-tenant
+> isolation, full crypto subsystem (Ed25519/ECDSA/RSA/JWT key signing +
+> AES-256-GCM encrypt-then-sign license files), bearer-token auth (bootstrap
+> → admin/product tokens, write-gated), and a working REST API — all tested
+> end-to-end (71 tests + live PG/MySQL isolation suites). Next: OIDC SSO,
+> jobs/webhooks, gRPC, Next.js UI. See
 > [`docs/superpowers/specs/2026-07-25-license-server-rust-design.md`](docs/superpowers/specs/2026-07-25-license-server-rust-design.md)
 > for the full design and phase plan.
 
@@ -26,15 +26,20 @@ gRPC hot path and write our own SDKs.
 - **`crates/crypto`** — Ed25519/ECDSA-P256/RSA-2048/JWT license-key signing
   (5 schemes) + PEM license-file certificates with AES-256-GCM encrypt-then-sign
   (8 algorithm tuples) + `KeyStore` trait (Local impl + KMS seam). 18 tests.
-- **`crates/db`** — SQLite `Repository` impl for the full domain, with
-  verified cross-tenant isolation (6 tests). Postgres/MySQL migrations shipped;
-  their pool impls land next.
-- **`crates/api`** — axum REST API: accounts, products, policies, licenses
-  (create signs the key, validate, check-out issues a license file). 4 E2E
-  tests prove the full lifecycle through HTTP.
+- **`crates/db`** — **Three backends** (SQLite, PostgreSQL, MySQL) all
+  implementing the full domain `Repository`. SQLite runs in-memory for tests;
+  Postgres uses native UUID/JSONB + Row-Level Security (defense-in-depth
+  tenancy); MySQL uses BINARY(16) UUIDs. Cross-tenant isolation verified
+  against all three (18 isolation tests; PG/MySQL suites run live in CI).
+- **`crates/api`** — axum REST API with bearer-token auth: bootstrap
+  (`POST /v1/accounts` emits the first admin token), token CRUD, and
+  write-gated accounts/products/policies/licenses (create signs the key,
+  validate, check-out issues a license file). 5 E2E tests prove the full
+  lifecycle through HTTP including 401/403 enforcement.
 - **`crates/bin`** — binary entry point. Role-based dispatch
   (`--role=api|worker|scheduler|all`), config loading (env + toml), structured
-  tracing with secrets redaction, DB connect + migrate, full v1 router + health.
+  tracing with secrets redaction, **auto-selects DB backend from the
+  `DATABASE_URL` scheme**, runs migrations, full v1 router + health.
 - **`docker/`** — multi-stage distroless Dockerfiles for the API and (future)
   UI, plus a one-command `docker compose up` stack (Postgres + Redis + API).
 - **`.github/workflows/ci.yml`** — fmt + clippy gates, unit tests across
@@ -89,8 +94,8 @@ Pagination is **keyset/cursor-based** everywhere (no `OFFSET`).
 1. ✅ Domain + SQLite DB (migrations × 3, Repository impls, tenancy enforcement, isolation tests)
 2. ✅ Crypto core (5 key schemes, 8 license-file algos, KeyStore, rotation)
 3. ✅ Core REST API (accounts, products, policies, licenses + validate/check-out)
-4. ⏳ Auth + OIDC SSO + admin surface + Postgres/MySQL pool impls
-5. ⏳ Background jobs + HMAC webhooks + audit log
+4. ✅ Auth (bearer tokens, bootstrap, token CRUD) + **Postgres + MySQL backends** (RLS)
+5. ⏳ OIDC SSO + background jobs + HMAC webhooks + audit log
 6. ⏳ gRPC hot path (validate/activate/ping/check-in/check-out)
 7. ⏳ Next.js admin UI
 8. ⏳ Hardening (rate limiting, idempotency, read replicas, load test, security review)

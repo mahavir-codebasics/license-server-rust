@@ -101,6 +101,11 @@ impl From<Pool> for SqliteRepository {
     fn from(p: Pool) -> Self {
         match p {
             Pool::Sqlite(p) => Self::new(p),
+            // Programming error: a SqliteRepository can only be built from a
+            // Sqlite pool. Callers pick the backend at connect time.
+            Pool::Postgres(_) | Pool::Mysql(_) => {
+                panic!("SqliteRepository::from(Pool) called with a non-SQLite pool")
+            }
         }
     }
 }

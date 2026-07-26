@@ -1,6 +1,8 @@
 //! Error + pool type aliases.
 
 use license_domain::error::DomainError;
+use sqlx::mysql::MySqlPoolOptions;
+use sqlx::postgres::PgPoolOptions;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::str::FromStr;
 
@@ -28,14 +30,17 @@ pub(crate) fn not_found<T>(res: Option<Result<T, DomainError>>) -> Result<T, Dom
     res.ok_or_else(|| DomainError::NotFound("row not found".into()))?
 }
 
-/// The SQLite connection pool. Postgres/MySQL pools are added in their modules.
+/// Per-backend connection pool type aliases.
 pub type SqliteConnPool = sqlx::Pool<sqlx::Sqlite>;
+pub type PostgresConnPool = sqlx::Pool<sqlx::Postgres>;
+pub type MysqlConnPool = sqlx::Pool<sqlx::MySql>;
 
-/// A backend-agnostic handle. Phase 1 ships SQLite; Phase 1.x adds Postgres.
+/// A backend-agnostic handle. Owns one pool per backend.
 #[derive(Debug, Clone)]
 pub enum Pool {
     Sqlite(SqliteConnPool),
-    // Postgres(SqliteConnPool) and Mysql(...) added incrementally.
+    Postgres(PostgresConnPool),
+    Mysql(MysqlConnPool),
 }
 
 impl Pool {
@@ -59,6 +64,12 @@ impl Pool {
     }
 
     /// Connect from a URL, auto-detect backend, and run migrations.
+    ///
+    /// Postgres and MySQL require a reachable server (there is no in-memory
+    /// equivalent). The migration SQL for the detected backend is run verbatim;
+    /// both PG and MySQL migrations are written to be idempotent on objects they
+    /// own (`CREATE TABLE` will still fail on re-run — call this on a fresh DB,
+    /// or use the per-backend migration tracker in a real deploy).
     pub async fn connect(database_url: &str) -> Result<Self, DomainError> {
         let backend = crate::Backend::from_url(database_url)?;
         match backend {
@@ -77,13 +88,29 @@ impl Pool {
                     .map_err(map_err)?;
                 Ok(Self::Sqlite(pool))
             }
-            crate::Backend::Postgres | crate::Backend::Mysql => {
-                // Postgres/MySQL pools land in Phase 1.x. Fail explicitly so
-                // callers know to use the SQLite path until then.
-                Err(DomainError::Invalid(format!(
-                    "backend `{backend}` pool not yet wired in this build; \
-                     use SQLite for now (Postgres/MySQL land next)",
-                )))
+            crate::Backend::Postgres => {
+                let pool = PgPoolOptions::new()
+                    .max_connections(8)
+                    .connect(database_url)
+                    .await
+                    .map_err(map_err)?;
+                sqlx::raw_sql(crate::migrations::POSTGRES)
+                    .execute(&pool)
+                    .await
+                    .map_err(map_err)?;
+                Ok(Self::Postgres(pool))
+            }
+            crate::Backend::Mysql => {
+                let pool = MySqlPoolOptions::new()
+                    .max_connections(8)
+                    .connect(database_url)
+                    .await
+                    .map_err(map_err)?;
+                sqlx::raw_sql(crate::migrations::MYSQL)
+                    .execute(&pool)
+                    .await
+                    .map_err(map_err)?;
+                Ok(Self::Mysql(pool))
             }
         }
     }
@@ -92,3 +119,15 @@ impl Pool {
 /// Re-export the domain's DbError placeholder name for clarity at call sites
 /// that want a single error import.
 pub use license_domain::DomainError as DbError;
+
+impl Pool {
+    /// Consume the pool and return a backend-agnostic `Arc<dyn Repository>`.
+    /// Selects the right concrete `*Repository` based on which variant we are.
+    pub fn into_repository(self) -> std::sync::Arc<dyn license_domain::repository::Repository> {
+        match self {
+            Pool::Sqlite(p) => std::sync::Arc::new(crate::SqliteRepository::new(p)),
+            Pool::Postgres(p) => std::sync::Arc::new(crate::PostgresRepository::new(p)),
+            Pool::Mysql(p) => std::sync::Arc::new(crate::MysqlRepository::new(p)),
+        }
+    }
+}

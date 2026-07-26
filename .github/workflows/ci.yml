@@ -64,27 +64,52 @@ jobs:
     name: db contract tests (${{ matrix.backend }})
     needs: test
     runs-on: ubuntu-latest
-    # Phase 1 lands the integration tests; the job stays defined so the
-    # gating is ready. Enabled when the test file exists.
+    # Spin up the real database for each backend and run the isolation suite
+    # against it. SQLite uses in-memory (no service needed). This is the heart
+    # of the "multiple databases" guarantee.
     strategy:
       fail-fast: false
       matrix:
-        backend: [postgres, mysql, sqlite]
+        include:
+          - backend: postgres
+            test_file: pg_isolation
+            db_url: postgresql://license:license@localhost:5432/license
+          - backend: mysql
+            test_file: mysql_isolation
+            db_url: mysql://license:license@localhost:3306/license
+          - backend: sqlite
+            test_file: isolation
+            db_url: sqlite::memory:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
-      - name: Backend contract tests
-        env:
-          LICENSE_TEST_BACKEND: ${{ matrix.backend }}
+
+      # Start the database service for this matrix lane.
+      - name: Start Postgres
+        if: matrix.backend == 'postgres'
         run: |
-          if cargo test --workspace -p license-db --test '*' --no-run 2>/dev/null; then
-            cargo test --workspace -p license-db --test '*'
-          else
-            echo "no db integration tests yet (Phase 1) — skipping"
-          fi
+          docker run -d --name pg -e POSTGRES_USER=license -e POSTGRES_PASSWORD=license \
+            -e POSTGRES_DB=license -p 5432:5432 postgres:16-alpine
+          for i in $(seq 1 30); do
+            docker exec pg pg_isready -U license && break || sleep 1
+          done
+      - name: Start MySQL
+        if: matrix.backend == 'mysql'
+        run: |
+          docker run -d --name mysql -e MYSQL_ROOT_PASSWORD=root \
+            -e MYSQL_DATABASE=license -e MYSQL_USER=license -e MYSQL_PASSWORD=license \
+            -p 3306:3306 mysql:8
+          for i in $(seq 1 60); do
+            docker exec mysql mysqladmin ping -u license -plicense --silent && break || sleep 1
+          done
+
+      - name: Run isolation tests (${{ matrix.backend }})
+        env:
+          DATABASE_URL: ${{ matrix.db_url }}
+        run: cargo test -p license-db --test ${{ matrix.test_file }} -- --include-ignored
 
   docker-build:
     name: docker image builds

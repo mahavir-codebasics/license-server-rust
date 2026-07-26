@@ -9,6 +9,14 @@
 
 pub mod backend;
 pub mod error;
+pub mod mysql;
+mod mysql_licenses;
+mod mysql_machines;
+mod mysql_misc;
+pub mod pg;
+mod pg_licenses;
+mod pg_machines;
+mod pg_misc;
 pub mod sqlite;
 mod sqlite_licenses;
 mod sqlite_machines;
@@ -16,6 +24,8 @@ mod sqlite_misc;
 
 pub use backend::Backend;
 pub use error::{DbError, Pool};
+pub use mysql::MysqlRepository;
+pub use pg::PostgresRepository;
 pub use sqlite::SqliteRepository;
 
 /// Embed the per-backend migration SQL into the binary so a fresh deploy
