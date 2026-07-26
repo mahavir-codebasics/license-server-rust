@@ -167,10 +167,10 @@ Swap DB via `DATABASE_URL` scheme.
 | Phase | Deliverable |
 |---|---|
 | 0 ✅ skeleton | workspace, config, telemetry, health, Dockerfile, 3-DB CI |
-| 1 🔄 domain+db | entities, 3×migrations, Repository impls, tenancy + isolation tests |
-| 2 ⏳ crypto core | 5 key schemes, 8 license-file algos, KeyStore, rotation, test vectors |
-| 3 ⏳ core API | accounts, products, policies, licenses (+actions), machines, tokens, entitlements |
-| 4 ⏳ auth+sso | login, TOTP, OIDC JIT, `/me`, memberships |
+| 1 ✅ domain+db | entities, 3×migrations, SQLite Repository impl, tenancy + isolation tests |
+| 2 ✅ crypto core | 5 key schemes, 8 license-file algos, KeyStore, rotation, test vectors |
+| 3 ✅ core API | accounts, products, policies, licenses (+actions), tokens, E2E tests |
+| 4 ✅ auth + multi-db | bearer tokens/bootstrap/token CRUD + **Postgres (RLS) + MySQL backends** |
 | 5 ⏳ jobs+webhooks | apalis workers, cron sweeps, HMAC webhooks, audit log |
 | 6 ⏳ gRPC | tonic validate/activate/ping/check-in/check-out |
 | 7 ⏳ admin UI | Next.js console (orgs → licenses end-to-end via UI) |
