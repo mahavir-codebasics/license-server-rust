@@ -10,6 +10,7 @@
 //! Keyset/cursor pagination everywhere (no OFFSET). All tenant-scoped routes
 //! under `/v1/accounts/{accountId}/...`.
 
+pub mod auth;
 pub mod error;
 pub mod extract;
 pub mod response;

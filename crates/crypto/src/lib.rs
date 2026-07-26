@@ -27,6 +27,7 @@ pub mod key;
 pub mod keystream;
 pub mod license_file;
 pub mod store;
+pub mod token;
 
 pub use error::{CryptoError, Result};
 pub use key::{
@@ -35,6 +36,7 @@ pub use key::{
 };
 pub use license_file::{Algorithm, Certificate, Encryption, LicenseFileError, SignatureScheme};
 pub use store::{KeyStore, LocalKeyStore};
+pub use token::{generate as generate_token, hash as hash_token, GeneratedToken, TokenPrefix};
 
 /// SHA-256 of `data`, hex-encoded. Used for license-key and token hashing
 /// (the only thing we persist for lookup; the plaintext is never stored).

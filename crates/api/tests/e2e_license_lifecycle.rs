@@ -36,11 +36,20 @@ async fn body_str(resp: axum::response::Response) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
+/// Pull the `data.id` string out of a JSON envelope response body.
+fn data_id(body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body).unwrap()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
 #[tokio::test]
 async fn full_license_lifecycle() {
     let app = test_app().await;
 
-    // 1. Create an account (org).
+    // 1. Bootstrap: create an account (org). This is the ONE unauthenticated
+    //    write — the response carries the first admin token (plaintext, once).
     let resp = app
         .clone()
         .oneshot(
@@ -57,13 +66,16 @@ async fn full_license_lifecycle() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_str(resp).await;
-    let account_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["data"]["id"]
+    let v = serde_json::from_str::<serde_json::Value>(&body).unwrap();
+    let account_id = v["data"]["id"].as_str().unwrap().to_string();
+    let admin_token = v["data"]["admin_token"]
         .as_str()
-        .unwrap()
+        .expect("bootstrap admin_token must be returned")
         .to_string();
+    assert!(!admin_token.is_empty(), "admin token must be non-empty");
     let base = format!("/v1/accounts/{account_id}");
 
-    // 2. Create a product.
+    // 1b. An UNAUTHENTICATED write to a tenant-scoped resource must be 401.
     let resp = app
         .clone()
         .oneshot(
@@ -72,63 +84,70 @@ async fn full_license_lifecycle() {
                 .uri(format!("{base}/products"))
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::json!({"name":"ACME Pro"}).to_string(),
+                    serde_json::json!({"name":"should fail"}).to_string(),
                 ))
                 .unwrap(),
         )
         .await
         .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "unauthenticated write must be rejected"
+    );
+
+    // Helper: a Bearer-authenticated POST JSON request.
+    let authed_post = |uri: String, token: String, payload: serde_json::Value| {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(payload.to_string()))
+            .unwrap()
+    };
+
+    // 2. Create a product — authenticated with the bootstrap admin token.
+    let resp = app
+        .clone()
+        .oneshot(authed_post(
+            format!("{base}/products"),
+            admin_token.clone(),
+            serde_json::json!({"name":"ACME Pro"}),
+        ))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let product_id = serde_json::from_str::<serde_json::Value>(&body_str(resp).await).unwrap()
-        ["data"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let product_id = data_id(&body_str(resp).await);
 
     // 3. Create a policy (Ed25519 scheme).
     let resp = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("{base}/policies"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "product_id": product_id,
-                        "name": "pro-monthly",
-                        "scheme": "ED25519_SIGN",
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
+        .oneshot(authed_post(
+            format!("{base}/policies"),
+            admin_token.clone(),
+            serde_json::json!({
+                "product_id": product_id,
+                "name": "pro-monthly",
+                "scheme": "ED25519_SIGN",
+            }),
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let policy_id = serde_json::from_str::<serde_json::Value>(&body_str(resp).await).unwrap()
-        ["data"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let policy_id = data_id(&body_str(resp).await);
 
     // 4. Create a license — this signs the key and returns it ONCE.
     let resp = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("{base}/licenses"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "product_id": product_id,
-                        "policy_id": policy_id,
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
+        .oneshot(authed_post(
+            format!("{base}/licenses"),
+            admin_token.clone(),
+            serde_json::json!({
+                "product_id": product_id,
+                "policy_id": policy_id,
+            }),
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -159,6 +178,8 @@ async fn full_license_lifecycle() {
     assert_eq!(v["data"]["state"], "active");
 
     // 6. Cross-tenant isolation: a second account cannot read the license.
+    //    Bootstrap a second org (also unauthenticated) and try to GET acme's
+    //    license through it — the data layer maps cross-tenant reads to 404.
     let resp = app
         .clone()
         .oneshot(
@@ -173,11 +194,7 @@ async fn full_license_lifecycle() {
         )
         .await
         .unwrap();
-    let globex_id = serde_json::from_str::<serde_json::Value>(&body_str(resp).await).unwrap()
-        ["data"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let globex_id = data_id(&body_str(resp).await);
     let resp = app
         .clone()
         .oneshot(
@@ -193,6 +210,42 @@ async fn full_license_lifecycle() {
         resp.status(),
         StatusCode::NOT_FOUND,
         "globex must NOT see acme's license"
+    );
+
+    // 7. A token from a DIFFERENT account cannot write to acme — cross-tenant
+    //    writes are forbidden even with a valid (foreign) admin token.
+    let globex_token = {
+        // Re-bootstrap globex's token by reading it from its create response.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/accounts")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"slug":"globex2","name":"Globex2"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = serde_json::from_str::<serde_json::Value>(&body_str(resp).await).unwrap();
+        v["data"]["admin_token"].as_str().unwrap().to_string()
+    };
+    let resp = app
+        .clone()
+        .oneshot(authed_post(
+            format!("{base}/products"),
+            globex_token,
+            serde_json::json!({"name":"foreign"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "a foreign admin token must not write to acme"
     );
 }
 
