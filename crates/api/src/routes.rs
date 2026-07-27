@@ -26,6 +26,7 @@ use license_domain::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
+use tower_http::cors::{Any, CorsLayer};
 
 /// Build the v1 router with the given shared state. The auth middleware runs
 /// on every request (soft-fail: missing/invalid token → anonymous).
@@ -89,6 +90,14 @@ pub fn router(state: AppState) -> Router {
             auth::middleware,
         ))
         .with_state(state)
+        // CORS: allow the admin UI (separate origin) to call the API. In
+        // production, restrict the origin instead of `Any`.
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
 }
 
 async fn root() -> Json<serde_json::Value> {
