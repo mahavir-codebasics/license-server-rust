@@ -22,6 +22,7 @@ tracing.workspace = true
 uuid.workspace = true
 time.workspace = true
 bytes.workspace = true
+redis.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

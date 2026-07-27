@@ -9,13 +9,32 @@ use std::sync::Arc;
 ///
 /// `repo` is a trait object so the API works with ANY backend (SQLite,
 /// Postgres, MySQL) — the concrete impl is chosen at startup via
-/// [`license_db::Pool::connect`] and erased here.
+/// [`license_db::Pool::connect`] and erased here. `redis` is optional: when
+/// present it backs rate limiting + idempotency; when absent those degrade to
+/// no-ops (the API still works).
 #[derive(Clone)]
 pub struct AppState {
     pub repo: Arc<dyn Repository>,
     /// Master secret used for AES-key derivation + token hashing.
     /// (In production this comes from the KMS-backed KeyStore.)
     pub master_secret: Arc<[u8; 32]>,
+    /// Optional Redis client for rate limiting + idempotency.
+    pub redis: Option<Arc<redis::Client>>,
+}
+
+impl AppState {
+    pub fn new(repo: Arc<dyn Repository>, master_secret: [u8; 32]) -> Self {
+        Self {
+            repo,
+            master_secret: Arc::new(master_secret),
+            redis: None,
+        }
+    }
+
+    pub fn with_redis(mut self, redis: redis::Client) -> Self {
+        self.redis = Some(Arc::new(redis));
+        self
+    }
 }
 
 /// Pagination query: `?page[limit]=25&page[after]=<cursor>`.

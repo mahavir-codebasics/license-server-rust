@@ -17,3 +17,5 @@ serde_json.workspace = true
 url.workspace = true
 time.workspace = true
 uuid.workspace = true
+
+parking_lot.workspace = true

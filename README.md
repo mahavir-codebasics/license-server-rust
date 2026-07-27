@@ -3,15 +3,16 @@
 A performance-first, multi-tenant **software-licensing & distribution server**
 written in Rust — a self-hostable alternative to [keygen-sh/keygen-api].
 
-> **Status:** Phases 0–7 complete. Domain core + license state machine, **all
-> three databases** (SQLite + PostgreSQL + MySQL) with verified multi-tenant
-> isolation, full crypto subsystem (Ed25519/ECDSA/RSA/JWT key signing +
-> AES-256-GCM encrypt-then-sign license files), bearer-token auth, working
-> REST API, **gRPC hot path**, **background jobs** (cron sweeps + HMAC webhooks
-> + audit log), and a **Next.js 15 admin UI** (login/bootstrap, org-scoped
-> dashboard, products/policies/licenses/machines/tokens/webhooks/events) —
-> 87 tests + live PG/MySQL isolation suites + verified scheduler/worker/gRPC
-> roles. Next: OIDC SSO, rate limiting, load test. See
+> **Status:** Phases 0–8 complete — the full v1 roadmap shipped. Domain core +
+> license state machine, **all three databases** (SQLite + PostgreSQL + MySQL)
+> with verified multi-tenant isolation, full crypto subsystem
+> (Ed25519/ECDSA/RSA/JWT key signing + AES-256-GCM encrypt-then-sign license
+> files), bearer-token auth, working REST API, **gRPC hot path**, **background
+> jobs** (cron sweeps + HMAC webhooks + audit log), **Next.js 15 admin UI**,
+> and **enterprise hardening** (OIDC SSO with JIT provisioning, Redis
+> rate-limiting, Idempotency-Key support, security-review test suite) — 127
+> tests + live PG/MySQL isolation suites + verified scheduler/worker/gRPC
+> roles. See
 > [`docs/superpowers/specs/2026-07-25-license-server-rust-design.md`](docs/superpowers/specs/2026-07-25-license-server-rust-design.md)
 > for the full design and phase plan.
 
@@ -100,7 +101,7 @@ Pagination is **keyset/cursor-based** everywhere (no `OFFSET`).
 5. ✅ Background jobs (cron sweeps: expiry/cull/retire) + HMAC webhooks + audit log
 6. ✅ gRPC hot path (Validate/ValidateKey/Activate/Ping/CheckIn/CheckOut)
 7. ✅ Next.js 15 admin UI (login, org-scoped dashboard, all resource pages)
-8. ⏳ OIDC SSO + rate limiting + idempotency + load test + security review
+8. ✅ Hardening — OIDC SSO (JIT), rate limiting (Redis token-bucket), Idempotency-Key, security-review suite
 
 **Deferred (post-v1):** distribution registries (npm/PyPI/RubyGems/OCI/Tauri),
 SAML, fine-grained RBAC/environments, import/export, ClickHouse analytics.

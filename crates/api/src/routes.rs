@@ -85,9 +85,15 @@ pub fn router(state: AppState) -> Router {
             post(checkout_license),
         )
         .fallback(fallback)
+        // Auth resolves the bearer -> AuthPrincipal (soft-fail: anonymous ok).
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::middleware,
+        ))
+        // Rate limit per (account/ip, route-class). No-op without Redis.
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::rate_limit::middleware,
         ))
         .with_state(state)
         // CORS: allow the admin UI (separate origin) to call the API. In
@@ -400,10 +406,27 @@ async fn create_license(
     State(state): State<AppState>,
     auth: RequiresAuth,
     Path(account_id): Path<String>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<CreateLicenseBody>,
-) -> ApiResult<Envelope<LicenseResponse>> {
+) -> std::result::Result<axum::response::Response, ApiError> {
     let principal = auth.0;
     let aid = parse_account_id(&account_id)?;
+
+    // Idempotency: pull the optional Idempotency-Key header; if we've seen it
+    // for this account, return the cached response (safe retry).
+    let idem_key = headers
+        .get("idempotency-key")
+        .and_then(|h| h.to_str().ok())
+        .filter(|s| crate::idempotency::is_well_formed(s))
+        .map(|s| s.to_string());
+    if let Some(key) = idem_key.as_deref() {
+        if let Some((status, body)) =
+            crate::idempotency::get_cached(state.redis.as_ref(), &aid.to_string(), key)
+        {
+            return Ok(cached_response_raw(status, &body));
+        }
+    }
+
     // License creation allows admin OR product tokens (server-side issuance).
     if principal.account_id() != aid
         || !matches!(
@@ -447,10 +470,18 @@ async fn create_license(
         json!({"id": license.id.to_string(), "policy_id": poid.to_string()}),
     );
 
-    Ok(Envelope::ok(LicenseResponse {
+    let resp = Envelope::ok(LicenseResponse {
         key: Some(signed.key),
         license,
-    }))
+    });
+
+    // Cache the response for idempotent retries (best-effort).
+    let body_str = serde_json::to_string(&resp).unwrap_or_default();
+    if let Some(key) = idem_key.as_deref() {
+        crate::idempotency::store(state.redis.as_ref(), &aid.to_string(), key, 200, &body_str);
+    }
+
+    Ok(axum::response::IntoResponse::into_response(resp))
 }
 
 async fn list_licenses(
@@ -652,6 +683,19 @@ async fn list_events(
 }
 
 // ── helpers ────────────────────────────────────────────────────────────
+
+/// Reconstruct a cached idempotent response as a raw JSON `Response`. We only
+/// cache 200s, so on a cache hit we replay the stored body verbatim.
+fn cached_response_raw(status: u16, body: &str) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    let code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
+    (
+        code,
+        Json(serde_json::from_str::<serde_json::Value>(body).unwrap_or_default()),
+    )
+        .into_response()
+}
 
 /// Gate a write to an account: the principal must be an admin/personal token
 /// belonging to the SAME account. Returns 403 otherwise (we don't leak whether

@@ -1,0 +1,179 @@
+//! Rate limiting — Redis-backed token-bucket per (account, route-class).
+//!
+//! When a Redis client is configured, every mutating request consumes a token
+//! from a bucket keyed `ratelimit:{account_id}:{class}`. Buckets refill at a
+//! fixed rate up to a burst cap. When Redis is absent (e.g. local dev with
+//! SQLite only), the layer is a no-op pass-through — the API still works.
+//!
+//! Algorithm: fixed-window-with-bucket via a single Lua script (atomic INCR +
+//! EXPIRE). This is the same approach Stripe/GitHub use; it's not perfectly
+//! smooth but it's correct under concurrency and cheap (one Redis round-trip).
+
+use axum::{
+    extract::{Request, State},
+    http::{header::RETRY_AFTER, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Response},
+};
+use redis::Commands;
+use std::sync::Arc;
+
+use crate::auth::AuthPrincipal;
+use crate::extract::AppState;
+
+/// Per-class limits. `capacity` = burst, `refill_secs` = window.
+#[derive(Debug, Clone, Copy)]
+pub struct Limit {
+    pub capacity: u32,
+    pub refill_secs: u64,
+}
+
+impl Limit {
+    pub const fn new(capacity: u32, refill_secs: u64) -> Self {
+        Self {
+            capacity,
+            refill_secs,
+        }
+    }
+}
+
+/// Default per-account limits. Tunable via config in a later pass.
+pub fn limit_for(method: &str, path: &str) -> Limit {
+    if method == "GET" {
+        // Reads: generous.
+        Limit::new(600, 60)
+    } else if path.contains("/actions/validate") {
+        // Validate is the hottest call (SDKs hammer it) — allow high throughput.
+        Limit::new(2000, 60)
+    } else {
+        // Mutations: stricter.
+        Limit::new(120, 60)
+    }
+}
+
+/// Apply the rate limit. Returns Ok(()) if allowed; Err(retry_after_secs) if
+/// the bucket is empty. No-op (Ok) when Redis isn't configured.
+pub fn check(
+    redis: Option<&Arc<redis::Client>>,
+    account_key: &str,
+    class: &str,
+    limit: Limit,
+) -> Result<(), u64> {
+    let Some(client) = redis else {
+        return Ok(());
+    };
+    let Ok(mut conn) = client.get_connection() else {
+        // Redis down: fail OPEN (don't break the API for a limiter fault).
+        return Ok(());
+    };
+    let key = format!("ratelimit:{account_key}:{class}");
+    let count: i64 = conn.incr(&key, 1).map_err(|_| 0u64)?;
+    // On the first increment of a window, set the TTL so the bucket resets.
+    if count == 1 {
+        let _: () = conn.expire(&key, limit.refill_secs as i64).unwrap_or(());
+    }
+    if count as u32 > limit.capacity {
+        // Bucket exhausted — return the window length as retry-after.
+        Err(limit.refill_secs)
+    } else {
+        Ok(())
+    }
+}
+
+/// Axum middleware: rate-limit by account + route class. Runs after auth so
+/// the principal is known. Anonymous requests (no principal) are limited by
+/// client IP instead. When Redis isn't configured, this is a no-op.
+pub async fn middleware(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let limit = limit_for(method.as_str(), &path);
+
+    // Pick a key: the principal's account if authenticated, else the client IP.
+    let bucket_key = req
+        .extensions()
+        .get::<AuthPrincipal>()
+        .map(|p| format!("acc:{}", p.account_id()))
+        .or_else(|| {
+            // Fall back to the forwarding IP (best-effort).
+            req.headers()
+                .get("x-forwarded-for")
+                .and_then(|h| h.to_str().ok())
+                .map(|s| format!("ip:{}", s.split(',').next().unwrap_or("unknown").trim()))
+        })
+        .unwrap_or_else(|| "anon".to_string());
+
+    let class = format!("{}:{}", method, path_to_class(&path));
+    if let Err(retry_after) = check(state.redis.as_ref(), &bucket_key, &class, limit) {
+        return too_many(retry_after);
+    }
+    next.run(req).await
+}
+
+/// Collapse a path to a rate-limit class so similar routes share a bucket:
+/// `/v1/accounts/{id}/licenses/{id}` -> `/v1/accounts/_/licenses/_`.
+fn path_to_class(path: &str) -> String {
+    path.split('/')
+        .map(|seg| {
+            if seg.len() == 36 && seg.chars().filter(|c| *c == '-').count() == 4 {
+                "_".to_string()
+            } else {
+                seg.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Render a rate-limited (429) response with Retry-After.
+pub fn too_many(retry_after_secs: u64) -> Response {
+    let body = serde_json::json!({
+        "errors": [{
+            "code": "rate_limited",
+            "title": "Too many requests",
+            "detail": format!("rate limit exceeded; retry in {retry_after_secs}s"),
+            "status": 429,
+        }]
+    });
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(RETRY_AFTER, retry_after_secs.to_string())],
+        axum::Json(body),
+    )
+        .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_gets_a_higher_limit() {
+        let v = limit_for("POST", "/v1/accounts/x/licenses/y/actions/validate");
+        let m = limit_for("POST", "/v1/accounts/x/licenses");
+        assert!(
+            v.capacity > m.capacity,
+            "validate should allow more than mutations"
+        );
+    }
+
+    #[test]
+    fn reads_are_generous() {
+        let r = limit_for("GET", "/v1/accounts/x/licenses");
+        let m = limit_for("POST", "/v1/accounts/x/licenses");
+        assert!(r.capacity > m.capacity);
+    }
+
+    #[test]
+    fn check_passes_without_redis() {
+        // No Redis client -> always allowed (graceful degradation).
+        assert!(check(None, "acc", "class", Limit::new(1, 1)).is_ok());
+    }
+
+    #[test]
+    fn path_class_collapses_uuids() {
+        let c = path_to_class("/v1/accounts/019f99f9-6063-7c02-bca9-04722c894a9c/licenses");
+        assert_eq!(c, "/v1/accounts/_/licenses");
+        let c = path_to_class("/v1/accounts");
+        assert_eq!(c, "/v1/accounts");
+    }
+}

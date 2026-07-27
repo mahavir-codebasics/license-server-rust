@@ -36,3 +36,6 @@ uuid.workspace = true
 time.workspace = true
 url.workspace = true
 hex.workspace = true
+
+[dev-dependencies]
+license-crypto.workspace = true

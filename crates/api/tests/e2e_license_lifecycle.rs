@@ -22,11 +22,9 @@ use tower::ServiceExt;
 
 async fn test_app() -> Router {
     let pool = Pool::sqlite_in_memory().await.unwrap();
-    let repo = SqliteRepository::from(pool);
-    let state = AppState {
-        repo: Arc::new(repo),
-        master_secret: Arc::new([0x42u8; 32]),
-    };
+    let repo: Arc<dyn license_domain::repository::Repository> =
+        Arc::new(SqliteRepository::from(pool));
+    let state = AppState::new(repo, [0x42u8; 32]);
     router(state)
 }
 

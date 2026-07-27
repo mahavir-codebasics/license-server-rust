@@ -22,12 +22,8 @@ use tracing::{error, info};
 /// Entry for the `api` role: HTTP REST + the gRPC hot-path server, concurrently.
 pub async fn run_api(cfg: &Config) -> Result<()> {
     let repo = build_repo(cfg).await?;
-    let master_secret =
-        decode_master_secret(&cfg.crypto.master_key).context("decoding master key")?;
-    let state = license_api::extract::AppState {
-        repo: repo.clone(),
-        master_secret: std::sync::Arc::new(master_secret),
-    };
+    let state = build_state(cfg, repo.clone())?;
+    let master_secret = state.master_secret.clone();
     let app = license_api::router(state).merge(
         Router::new()
             .route("/healthz", get(healthz))
@@ -43,7 +39,7 @@ pub async fn run_api(cfg: &Config) -> Result<()> {
 
     // gRPC hot path (tonic). Shares the same master secret as the REST API.
     let grpc_svc = license_grpc::proto::license_service_server::LicenseServiceServer::new(
-        license_grpc::LicenseService::new(repo.clone(), std::sync::Arc::new(master_secret)),
+        license_grpc::LicenseService::new(repo.clone(), master_secret),
     );
     // gRPC binds its own listener internally via .serve(addr).
     info!(addr = %grpc_addr, "grpc listening");
@@ -115,14 +111,9 @@ pub async fn run_all(cfg: &Config) -> Result<()> {
     preflight(cfg).await?;
 
     let repo = build_repo(cfg).await?;
-    let master_secret =
-        decode_master_secret(&cfg.crypto.master_key).context("decoding master key")?;
+    let state = build_state(cfg, repo.clone())?;
 
     // API task.
-    let state = license_api::extract::AppState {
-        repo: repo.clone(),
-        master_secret: std::sync::Arc::new(master_secret),
-    };
     let api_router = license_api::router(state);
     let http_addr: SocketAddr = format!("{}:{}", cfg.http.host, cfg.http.port)
         .parse()
@@ -178,6 +169,29 @@ async fn build_repo(cfg: &Config) -> Result<Arc<dyn license_domain::repository::
         .into_repository())
 }
 
+/// Build the AppState from config: DB repo + decoded master secret + optional
+/// Redis client (for rate limiting + idempotency). Redis is best-effort — if
+/// it's unreachable, the API still works (rate limiting + idempotency no-op).
+fn build_state(
+    cfg: &Config,
+    repo: Arc<dyn license_domain::repository::Repository>,
+) -> Result<license_api::extract::AppState> {
+    let master_secret =
+        decode_master_secret(&cfg.crypto.master_key).context("decoding master key")?;
+    let mut state = license_api::extract::AppState::new(repo, master_secret);
+    if !cfg.redis.url.is_empty() {
+        match redis::Client::open(cfg.redis.url.as_str()) {
+            Ok(client) => {
+                state = state.with_redis(client);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "redis client init failed; rate limiting/idempotency disabled");
+            }
+        }
+    }
+    Ok(state)
+}
+
 /// Build the axum app: the v1 API router merged with health endpoints.
 #[allow(dead_code)]
 async fn build_app(cfg: &Config) -> Result<Router> {
@@ -188,15 +202,8 @@ async fn build_app(cfg: &Config) -> Result<Router> {
         .context("connecting database")?;
     let repo = pool.into_repository();
 
-    // Decode the master key (32 bytes hex) into the in-memory secret. In
-    // production this becomes the KMS-backed KeyStore (Phase 2 seam).
-    let master_secret =
-        decode_master_secret(&cfg.crypto.master_key).context("decoding master key")?;
-
-    let state = license_api::extract::AppState {
-        repo,
-        master_secret: std::sync::Arc::new(master_secret),
-    };
+    // Decode the master key + build the AppState (repo + master secret + Redis).
+    let state = build_state(cfg, repo)?;
 
     let api = license_api::router(state);
     Ok(Router::new()
