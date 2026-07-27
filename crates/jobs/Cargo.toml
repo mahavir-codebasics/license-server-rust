@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 license-domain.workspace = true
 license-db.workspace = true
-apalis.workspace = true
+apalis = { workspace = true, features = ["layers"] }
 apalis-redis.workspace = true
 apalis-cron.workspace = true
 redis.workspace = true
@@ -20,5 +20,8 @@ serde_json.workspace = true
 time.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
+anyhow.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 hmac.workspace = true
 sha2.workspace = true
+hex.workspace = true

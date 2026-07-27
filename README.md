@@ -3,13 +3,15 @@
 A performance-first, multi-tenant **software-licensing & distribution server**
 written in Rust — a self-hostable alternative to [keygen-sh/keygen-api].
 
-> **Status:** Phases 0–4 complete. Domain core + license state machine, **all
+> **Status:** Phases 0–5 complete. Domain core + license state machine, **all
 > three databases** (SQLite + PostgreSQL + MySQL) with verified multi-tenant
 > isolation, full crypto subsystem (Ed25519/ECDSA/RSA/JWT key signing +
-> AES-256-GCM encrypt-then-sign license files), bearer-token auth (bootstrap
-> → admin/product tokens, write-gated), and a working REST API — all tested
-> end-to-end (71 tests + live PG/MySQL isolation suites). Next: OIDC SSO,
-> jobs/webhooks, gRPC, Next.js UI. See
+> AES-256-GCM encrypt-then-sign license files), bearer-token auth, working
+> REST API, **background jobs** (cron sweeps: license expiry / heartbeat cull
+> / key rotation; Redis-queued webhooks with HMAC-SHA256 signing + exp
+> backoff; fire-and-forget audit log) — 81 tests + live PG/MySQL isolation
+> suites + verified scheduler/worker roles. Next: gRPC hot path, Next.js UI.
+> See
 > [`docs/superpowers/specs/2026-07-25-license-server-rust-design.md`](docs/superpowers/specs/2026-07-25-license-server-rust-design.md)
 > for the full design and phase plan.
 
@@ -95,7 +97,7 @@ Pagination is **keyset/cursor-based** everywhere (no `OFFSET`).
 2. ✅ Crypto core (5 key schemes, 8 license-file algos, KeyStore, rotation)
 3. ✅ Core REST API (accounts, products, policies, licenses + validate/check-out)
 4. ✅ Auth (bearer tokens, bootstrap, token CRUD) + **Postgres + MySQL backends** (RLS)
-5. ⏳ OIDC SSO + background jobs + HMAC webhooks + audit log
+5. ✅ Background jobs (cron sweeps: expiry/cull/retire) + HMAC webhooks + audit log
 6. ⏳ gRPC hot path (validate/activate/ping/check-in/check-out)
 7. ⏳ Next.js admin UI
 8. ⏳ Hardening (rate limiting, idempotency, read replicas, load test, security review)

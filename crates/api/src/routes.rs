@@ -41,6 +41,13 @@ pub fn router(state: AppState) -> Router {
             get(list_tokens).post(create_token),
         )
         .route("/v1/accounts/:account_id/tokens/:token_id", get(get_token))
+        // — Webhooks —
+        .route(
+            "/v1/accounts/:account_id/webhooks/endpoints",
+            get(list_webhook_endpoints).post(create_webhook_endpoint),
+        )
+        // — Event log (audit) —
+        .route("/v1/accounts/:account_id/events", get(list_events))
         // — Products —
         .route(
             "/v1/accounts/:account_id/products",
@@ -132,6 +139,14 @@ async fn create_account(
     let mut token = Token::new(account.id, TokenKind::Admin, gen.hash.clone());
     token.name = Some("bootstrap admin".into());
     state.repo.tokens().create(&token).await?;
+
+    // Audit the bootstrap.
+    license_jobs::record(
+        state.repo.clone(),
+        account.id,
+        "account.created",
+        json!({"slug": account.slug, "name": account.name}),
+    );
 
     Ok(Envelope::ok(CreateAccountResponse {
         account,
@@ -263,6 +278,12 @@ async fn create_product(
     require_account_write(&principal, aid)?;
     let product = Product::new(aid, body.name);
     let product = state.repo.products().create(&product).await?;
+    license_jobs::record(
+        state.repo.clone(),
+        aid,
+        "product.created",
+        json!({"id": product.id.to_string(), "name": product.name}),
+    );
     Ok(Envelope::ok(product))
 }
 
@@ -314,6 +335,12 @@ async fn create_policy(
     let scheme = parse_scheme(&body.scheme)?;
     let policy = Policy::new(aid, pid, body.name, scheme);
     let policy = state.repo.policies().create(&policy).await?;
+    license_jobs::record(
+        state.repo.clone(),
+        aid,
+        "policy.created",
+        json!({"id": policy.id.to_string(), "scheme": body.scheme}),
+    );
     Ok(Envelope::ok(policy))
 }
 
@@ -402,6 +429,14 @@ async fn create_license(
     license.key_hash = signed.key_hash;
 
     state.repo.licenses().create(&license).await?;
+
+    // Best-effort audit log (fire-and-forget; never blocks the response).
+    license_jobs::record(
+        state.repo.clone(),
+        aid,
+        "license.created",
+        json!({"id": license.id.to_string(), "policy_id": poid.to_string()}),
+    );
 
     Ok(Envelope::ok(LicenseResponse {
         key: Some(signed.key),
@@ -526,6 +561,85 @@ async fn checkout_license(
     // issue() directly. (Returning it would need a side-channel for the
     // throwaway keypair's public key, which the persisted-SigningKey path
     // in Phase 4 resolves.)
+}
+
+// ── Webhooks ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct CreateWebhookBody {
+    pub url: String,
+    /// Optional: subscribe to specific event types (empty = all).
+    #[serde(default)]
+    pub event_types: Vec<String>,
+}
+
+/// Response for webhook-endpoint creation: includes the HMAC signing secret
+/// ONCE (the worker signs deliveries with it; the receiver verifies).
+#[derive(Debug, Serialize)]
+pub struct CreateWebhookResponse {
+    #[serde(flatten)]
+    pub endpoint: WebhookEndpoint,
+    #[serde(rename = "secret")]
+    pub plaintext_secret: String,
+}
+
+async fn create_webhook_endpoint(
+    State(state): State<AppState>,
+    auth: RequiresAuth,
+    Path(account_id): Path<String>,
+    Json(body): Json<CreateWebhookBody>,
+) -> ApiResult<Envelope<CreateWebhookResponse>> {
+    let principal = auth.0;
+    let aid = parse_account_id(&account_id)?;
+    require_account_write(&principal, aid)?;
+    if body.url.trim().is_empty() || !body.url.starts_with("http") {
+        return Err(ApiError::bad_request("url must be a valid http(s) URL"));
+    }
+    // Generate a per-endpoint HMAC secret (32 bytes hex).
+    let secret = license_crypto::sha256_hex(&license_crypto::random_32());
+    let mut endpoint = WebhookEndpoint::new(aid, body.url, secret.clone());
+    endpoint.event_types = body.event_types;
+    let endpoint = state.repo.webhooks().create_endpoint(&endpoint).await?;
+    license_jobs::record(
+        state.repo.clone(),
+        aid,
+        "webhook.endpoint.created",
+        json!({"id": endpoint.id.to_string()}),
+    );
+    Ok(Envelope::ok(CreateWebhookResponse {
+        endpoint,
+        plaintext_secret: secret,
+    }))
+}
+
+async fn list_webhook_endpoints(
+    State(state): State<AppState>,
+    auth: RequiresAuth,
+    Path(account_id): Path<String>,
+    query: Option<axum::extract::Query<crate::extract::PageParams>>,
+) -> ApiResult<EnvelopePage<WebhookEndpoint>> {
+    let principal = auth.0;
+    let aid = parse_account_id(&account_id)?;
+    require_account_write(&principal, aid)?;
+    let page = extract_page(query).await;
+    let result = state.repo.webhooks().list_endpoints(aid, page).await?;
+    Ok(EnvelopePage::new(result.data, result.next_cursor))
+}
+
+// ── Event log (audit) ──────────────────────────────────────────────────
+
+async fn list_events(
+    State(state): State<AppState>,
+    auth: RequiresAuth,
+    Path(account_id): Path<String>,
+    query: Option<axum::extract::Query<crate::extract::PageParams>>,
+) -> ApiResult<EnvelopePage<EventLog>> {
+    let principal = auth.0;
+    let aid = parse_account_id(&account_id)?;
+    require_account_write(&principal, aid)?;
+    let page = extract_page(query).await;
+    let result = state.repo.events().list(aid, page).await?;
+    Ok(EnvelopePage::new(result.data, result.next_cursor))
 }
 
 // ── helpers ────────────────────────────────────────────────────────────

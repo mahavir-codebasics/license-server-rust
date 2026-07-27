@@ -317,3 +317,219 @@ async fn unknown_route_returns_404_envelope() {
     let v = serde_json::from_str::<serde_json::Value>(&body_str(resp).await).unwrap();
     assert_eq!(v["errors"][0]["code"], "not_found");
 }
+
+#[tokio::test]
+async fn audit_log_records_creates() {
+    // The audit log must capture account/product/policy/license creation.
+    // Fire-and-forget append, so we retry briefly until it lands.
+    let app = test_app().await;
+
+    // bootstrap account + admin token
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/accounts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"slug":"auditco","name":"Audit"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_str(resp).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let acct = v["data"]["id"].as_str().unwrap().to_string();
+    let tok = v["data"]["admin_token"].as_str().unwrap().to_string();
+
+    // create product + policy + license (each emits an audit event)
+    let prod = authed_post_id(
+        app.clone(),
+        &format!("/v1/accounts/{acct}/products"),
+        &tok,
+        serde_json::json!({"name":"P"}),
+    )
+    .await;
+    let pol = authed_post_id(
+        app.clone(),
+        &format!("/v1/accounts/{acct}/policies"),
+        &tok,
+        serde_json::json!({"product_id": prod, "name":"pol", "scheme":"ED25519_SIGN"}),
+    )
+    .await;
+    let _lic = authed_post_id(
+        app.clone(),
+        &format!("/v1/accounts/{acct}/licenses"),
+        &tok,
+        serde_json::json!({"product_id": prod, "policy_id": pol}),
+    )
+    .await;
+
+    // poll the event log until the fire-and-forget appends land (or timeout)
+    let mut got = Vec::new();
+    for _ in 0..20 {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/accounts/{acct}/events"))
+                    .header("authorization", format!("Bearer {tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&body_str(resp).await).unwrap();
+        got = v["data"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|e| e["event_type"].as_str().unwrap().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if got.len() >= 4 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        got.iter().any(|e| e == "account.created"),
+        "missing account.created in {got:?}"
+    );
+    assert!(
+        got.iter().any(|e| e == "product.created"),
+        "missing product.created in {got:?}"
+    );
+    assert!(
+        got.iter().any(|e| e == "policy.created"),
+        "missing policy.created in {got:?}"
+    );
+    assert!(
+        got.iter().any(|e| e == "license.created"),
+        "missing license.created in {got:?}"
+    );
+}
+
+#[tokio::test]
+async fn webhook_endpoint_crud() {
+    let app = test_app().await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/accounts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"slug":"hookco","name":"Hook"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&body_str(resp).await).unwrap();
+    let acct = v["data"]["id"].as_str().unwrap().to_string();
+    let tok = v["data"]["admin_token"].as_str().unwrap().to_string();
+
+    // create a webhook endpoint
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/accounts/{acct}/webhooks/endpoints"))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {tok}"))
+                .body(Body::from(
+                    serde_json::json!({"url":"https://example.com/hook","event_types":["license.created"]}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body_str(resp).await).unwrap();
+    assert_eq!(v["data"]["url"], "https://example.com/hook");
+    assert!(
+        !v["data"]["secret"].as_str().unwrap().is_empty(),
+        "HMAC secret returned once"
+    );
+
+    // list endpoints
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/accounts/{acct}/webhooks/endpoints"))
+                .header("authorization", format!("Bearer {tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body_str(resp).await).unwrap();
+    assert_eq!(v["data"].as_array().unwrap().len(), 1);
+
+    // a foreign admin token cannot read the endpoints
+    let resp2 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/accounts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"slug":"otherco","name":"Other"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let other_tok = serde_json::from_str::<serde_json::Value>(&body_str(resp2).await).unwrap()
+        ["data"]["admin_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/accounts/{acct}/webhooks/endpoints"))
+                .header("authorization", format!("Bearer {other_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "foreign token must not list another account's webhooks"
+    );
+}
+
+async fn authed_post_id(app: Router, uri: &str, tok: &str, body: serde_json::Value) -> String {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {tok}"))
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "POST {uri} failed");
+    let v: serde_json::Value = serde_json::from_str(&body_str(resp).await).unwrap();
+    v["data"]["id"].as_str().unwrap().to_string()
+}

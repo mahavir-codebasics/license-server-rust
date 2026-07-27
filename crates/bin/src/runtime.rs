@@ -1,16 +1,9 @@
 //! Runtime — wires together and dispatches the requested role(s).
 //!
-//! Phase 0 scope:
-//!   - `run_api`: serves a minimal HTTP router with `/healthz` and `/readyz`.
-//!   - `run_worker` / `run_scheduler`: log-only placeholders that keep the
-//!     process alive until shutdown (populated in later phases).
-//!   - `run_all`: drives `api` + `worker` + `scheduler` concurrently and
-//!     returns when any one of them errors or the process is signaled.
-//!
-//! Later phases will:
-//!   - swap `health_router()` for `license_api::router(repo, …)`;
-//!   - bring up the tonic gRPC service in the api role;
-//!   - populate the apalis worker pool and cron scheduler.
+//!   - `run_api`: serves the v1 REST router + health endpoints.
+//!   - `run_worker`: Redis-backed apalis workers (webhook delivery).
+//!   - `run_scheduler`: cron sweeps (license expiry, heartbeat cull, key retire).
+//!   - `run_all`: api + (cron + workers) concurrently.
 
 use crate::config::Config;
 use anyhow::{Context, Result};
@@ -22,6 +15,7 @@ use axum::{
 };
 use serde_json::json;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::signal;
 use tracing::{error, info};
 
@@ -43,45 +37,100 @@ pub async fn run_api(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Entry for the `worker` role: apalis job runners (later).
+/// Entry for the `worker` role: Redis-backed job runners (webhook delivery).
+/// Connects the DB + Redis, then runs the apalis workers until shutdown.
 pub async fn run_worker(cfg: &Config) -> Result<()> {
-    info!("worker role: starting (phase 5 will populate apalis workers)");
-    // Keep alive until shutdown.
-    shutdown_signal().await;
+    let repo = build_repo(cfg).await?;
+    info!("worker role: starting webhook-delivery workers");
+    license_jobs::run_worker(repo, &cfg.redis.url)
+        .await
+        .map_err(|e| anyhow::anyhow!("worker role: {e}"))?;
     info!("worker role: shutdown");
-    let _ = cfg;
     Ok(())
 }
 
-/// Entry for the `scheduler` role: cron sweeps (later).
+/// Entry for the `scheduler` role: cron sweeps (license expirations, heartbeat
+/// culling, signing-key retirement). Runs as a singleton — the sweeps are
+/// idempotent so duplicate runs across replicas are harmless, but a single
+/// leader avoids pointless work. (Redis leader election lands in Phase 8.)
 pub async fn run_scheduler(cfg: &Config) -> Result<()> {
-    info!("scheduler role: starting (phase 5 will populate cron jobs)");
-    shutdown_signal().await;
+    let repo = build_repo(cfg).await?;
+    info!("scheduler role: starting cron sweeps");
+    license_jobs::run_scheduler(repo)
+        .await
+        .map_err(|e| anyhow::anyhow!("scheduler role: {e}"))?;
     info!("scheduler role: shutdown");
-    let _ = cfg;
     Ok(())
 }
 
-/// Entry for `all`: run api + worker + scheduler concurrently.
+/// Entry for `all`: run the API server + the combined jobs runner (scheduler
+/// cron sweeps + redis workers) concurrently, returning when either errors or
+/// the process is signaled.
 pub async fn run_all(cfg: &Config) -> Result<()> {
-    // Fail fast on unreachable dependencies in `all` mode — better to refuse
-    // to start than to serve 500s. Individual role entrypoints skip this.
     preflight(cfg).await?;
 
-    let api_cfg = cfg.clone();
-    let worker_cfg = cfg.clone();
-    let sched_cfg = cfg.clone();
+    let repo = build_repo(cfg).await?;
+    let master_secret =
+        decode_master_secret(&cfg.crypto.master_key).context("decoding master key")?;
 
-    let (api, worker, sched) = tokio::join!(
-        run_api(&api_cfg),
-        run_worker(&worker_cfg),
-        run_scheduler(&sched_cfg)
-    );
+    // API task.
+    let state = license_api::extract::AppState {
+        repo: repo.clone(),
+        master_secret: std::sync::Arc::new(master_secret),
+    };
+    let api_router = license_api::router(state);
+    let http_addr: SocketAddr = format!("{}:{}", cfg.http.host, cfg.http.port)
+        .parse()
+        .context("invalid http bind address")?;
+    let api_listener = tokio::net::TcpListener::bind(http_addr)
+        .await
+        .with_context(|| format!("binding http {http_addr}"))?;
+    info!(addr = %http_addr, "http listening");
 
-    api?;
-    worker?;
-    sched?;
+    let api_task = tokio::spawn(async move {
+        axum::serve(
+            api_listener,
+            api_router.merge(
+                Router::new()
+                    .route("/healthz", get(healthz))
+                    .route("/readyz", get(readyz)),
+            ),
+        )
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .context("http server")
+    });
+
+    // Jobs task (cron + workers together).
+    let jobs_repo = repo.clone();
+    let jobs_redis = cfg.redis.url.clone();
+    let jobs_task = tokio::spawn(async move {
+        license_jobs::run_all_jobs(jobs_repo, &jobs_redis)
+            .await
+            .map_err(|e| anyhow::anyhow!("jobs: {e}"))
+    });
+
+    // Return on the first to finish/error.
+    tokio::select! {
+        res = api_task => {
+            info!("api task finished");
+            res.map_err(|e| anyhow::anyhow!("api join: {e}"))??;
+        }
+        res = jobs_task => {
+            info!("jobs task finished");
+            res.map_err(|e| anyhow::anyhow!("jobs join: {e}"))??;
+        }
+    }
     Ok(())
+}
+
+/// Connect to the configured DB, run migrations, and return a backend-agnostic
+/// `Arc<dyn Repository>`. Shared by every role.
+async fn build_repo(cfg: &Config) -> Result<Arc<dyn license_domain::repository::Repository>> {
+    Ok(license_db::Pool::connect(&cfg.database.url)
+        .await
+        .context("connecting database")?
+        .into_repository())
 }
 
 /// Build the axum app: the v1 API router merged with health endpoints.
