@@ -172,9 +172,9 @@ Swap DB via `DATABASE_URL` scheme.
 | 3 ✅ core API | accounts, products, policies, licenses (+actions), tokens, E2E tests |
 | 4 ✅ auth + multi-db | bearer tokens/bootstrap/token CRUD + **Postgres (RLS) + MySQL backends** |
 | 5 ✅ jobs+webhooks | cron sweeps (expiry/cull/retire), HMAC-SHA256 webhooks (exp backoff), audit log |
-| 6 ⏳ gRPC | tonic validate/activate/ping/check-in/check-out |
-| 7 ⏳ admin UI | Next.js console (orgs → licenses end-to-end via UI) |
-| 8 ⏳ hardening | rate limiting, idempotency, read replicas, load test, security review |
+| 6 ✅ gRPC | tonic validate/activate/ping/check-in/check-out (server-streamed checkout) |
+| 7 ✅ admin UI | Next.js 15 console (login/bootstrap, org-scoped dashboard, all resource pages) |
+| 8 ✅ hardening | OIDC SSO (JIT), rate limiting (Redis token-bucket), Idempotency-Key, security-review suite (9 properties) |
 
 **Deferred (post-v1):** distribution registries (npm/PyPI/RubyGems/OCI/Tauri),
 SAML, environments/fine-grained RBAC, import/export, ClickHouse analytics.
