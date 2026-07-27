@@ -171,7 +171,7 @@ Swap DB via `DATABASE_URL` scheme.
 | 2 ✅ crypto core | 5 key schemes, 8 license-file algos, KeyStore, rotation, test vectors |
 | 3 ✅ core API | accounts, products, policies, licenses (+actions), tokens, E2E tests |
 | 4 ✅ auth + multi-db | bearer tokens/bootstrap/token CRUD + **Postgres (RLS) + MySQL backends** |
-| 5 ⏳ jobs+webhooks | apalis workers, cron sweeps, HMAC webhooks, audit log |
+| 5 ✅ jobs+webhooks | cron sweeps (expiry/cull/retire), HMAC-SHA256 webhooks (exp backoff), audit log |
 | 6 ⏳ gRPC | tonic validate/activate/ping/check-in/check-out |
 | 7 ⏳ admin UI | Next.js console (orgs → licenses end-to-end via UI) |
 | 8 ⏳ hardening | rate limiting, idempotency, read replicas, load test, security review |
