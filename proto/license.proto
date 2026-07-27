@@ -1,0 +1,120 @@
+syntax = "proto3";
+
+package licensev1;
+
+// License service — the high-throughput machine-facing transport.
+//
+// These RPCs mirror the hottest REST actions (validate/activate/ping/...) but
+// over gRPC for clients that validate billions of times. Same auth (Bearer
+// token in metadata), same handlers under the hood (the domain layer is shared
+// with the REST API).
+
+service LicenseService {
+  // Validate a license by id. Returns validity + state.
+  rpc Validate(ValidateRequest) returns (ValidateResponse);
+
+  // Validate by the raw license key string (the SDK-style call).
+  rpc ValidateKey(ValidateKeyRequest) returns (ValidateResponse);
+
+  // Activate a license on a machine (node-locking).
+  rpc Activate(ActivateRequest) returns (MachineResponse);
+
+  // Deactivate a machine.
+  rpc Deactivate(DeactivateRequest) returns (DeactivateResponse);
+
+  // Heartbeat a machine (floating licenses).
+  rpc Ping(PingRequest) returns (PingResponse);
+
+  // License-level heartbeat (offline-expiry gating).
+  rpc CheckIn(CheckInRequest) returns (CheckInResponse);
+
+  // Issue an offline license-file certificate (server-streams the PEM bytes).
+  rpc CheckOut(CheckOutRequest) returns (stream CheckOutChunk);
+}
+
+message ValidateRequest {
+  string account_id = 1;
+  string license_id = 2;
+  // Optional machine fingerprint (for floating/overage evaluation).
+  string fingerprint = 3;
+}
+
+message ValidateKeyRequest {
+  // The raw signed license key. account_id is resolved from the license row.
+  string key = 1;
+}
+
+message ValidateResponse {
+  bool valid = 1;
+  string state = 2;       // active | suspended | revoked | expired
+  string detail = 3;      // empty when valid; reason when invalid
+  LicenseInfo license = 4;
+}
+
+message LicenseInfo {
+  string id = 1;
+  string account_id = 2;
+  string policy_id = 3;
+  uint64 uses = 4;
+  uint64 max_uses = 5;    // 0 = unlimited
+  string expiry = 6;      // RFC3339, empty if perpetual
+}
+
+message ActivateRequest {
+  string account_id = 1;
+  string license_id = 2;
+  string fingerprint = 3;  // required device id
+  string name = 4;         // optional friendly name
+  string platform = 5;     // optional
+  uint32 core_count = 6;   // optional
+}
+
+message MachineResponse {
+  string id = 1;
+  string license_id = 2;
+  string fingerprint = 3;
+  string state = 4;
+  string next_heartbeat = 5; // RFC3339, empty if no heartbeat required
+}
+
+message DeactivateRequest {
+  string account_id = 1;
+  string machine_id = 2;
+}
+
+message DeactivateResponse {
+  bool deactivated = 1;
+}
+
+message PingRequest {
+  string account_id = 1;
+  string machine_id = 2;
+}
+
+message PingResponse {
+  bool alive = 1;
+  string next_heartbeat = 2;
+}
+
+message CheckInRequest {
+  string account_id = 1;
+  string license_id = 2;
+}
+
+message CheckInResponse {
+  bool ok = 1;
+  string next_check_in = 2;
+}
+
+message CheckOutRequest {
+  string account_id = 1;
+  string license_id = 2;
+  // Algorithm e.g. "aes-256-gcm+ed25519". Defaults to aes-256-gcm+ed25519.
+  string algorithm = 3;
+}
+
+// A chunk of the license-file PEM (server-streamed so large files don't buffer).
+message CheckOutChunk {
+  bytes data = 1;
+  string algorithm = 2;  // only set on the first chunk
+}

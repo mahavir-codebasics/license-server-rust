@@ -344,8 +344,8 @@ pub fn sign_license_key(
     };
 
     Ok(SignedKey {
+        key_hash: crate::sha256_hex(key_string.as_bytes()),
         key: key_string,
-        key_hash: crate::sha256_hex(payload.as_bytes()),
     })
 }
 

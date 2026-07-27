@@ -19,22 +19,67 @@ use std::sync::Arc;
 use tokio::signal;
 use tracing::{error, info};
 
-/// Entry for the `api` role: HTTP + (later) gRPC.
+/// Entry for the `api` role: HTTP REST + the gRPC hot-path server, concurrently.
 pub async fn run_api(cfg: &Config) -> Result<()> {
-    let app = build_app(cfg).await?;
-    let addr: SocketAddr = format!("{}:{}", cfg.http.host, cfg.http.port)
+    let repo = build_repo(cfg).await?;
+    let master_secret =
+        decode_master_secret(&cfg.crypto.master_key).context("decoding master key")?;
+    let state = license_api::extract::AppState {
+        repo: repo.clone(),
+        master_secret: std::sync::Arc::new(master_secret),
+    };
+    let app = license_api::router(state).merge(
+        Router::new()
+            .route("/healthz", get(healthz))
+            .route("/readyz", get(readyz)),
+    );
+
+    let http_addr: SocketAddr = format!("{}:{}", cfg.http.host, cfg.http.port)
         .parse()
         .context("invalid http bind address")?;
+    let grpc_addr: SocketAddr = format!("{}:{}", cfg.grpc.host, cfg.grpc.port)
+        .parse()
+        .context("invalid grpc bind address")?;
 
-    let listener = tokio::net::TcpListener::bind(addr)
+    // gRPC hot path (tonic). Shares the same master secret as the REST API.
+    let grpc_svc = license_grpc::proto::license_service_server::LicenseServiceServer::new(
+        license_grpc::LicenseService::new(repo.clone(), std::sync::Arc::new(master_secret)),
+    );
+    // gRPC binds its own listener internally via .serve(addr).
+    info!(addr = %grpc_addr, "grpc listening");
+    let grpc_task = tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(grpc_svc)
+            .serve(grpc_addr)
+            .await
+            .context("grpc server")
+    });
+
+    // HTTP REST (axum).
+    let http_listener = tokio::net::TcpListener::bind(http_addr)
         .await
-        .with_context(|| format!("binding http {addr}"))?;
-    info!(addr = %addr, "http listening");
-    axum::serve(listener, app.into_make_service())
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("http server")?;
-    Ok(())
+        .with_context(|| format!("binding http {http_addr}"))?;
+    info!(addr = %http_addr, "http listening");
+    let http_task = tokio::spawn(async move {
+        axum::serve(http_listener, app.into_make_service())
+            .with_graceful_shutdown(shutdown_signal())
+            .await
+            .context("http server")
+    });
+
+    // Return when either errors.
+    tokio::select! {
+        res = grpc_task => {
+            info!("grpc task finished");
+            res.map_err(|e| anyhow::anyhow!("grpc join: {e}"))??;
+            Ok(())
+        }
+        res = http_task => {
+            info!("http task finished");
+            res.map_err(|e| anyhow::anyhow!("http join: {e}"))??;
+            Ok(())
+        }
+    }
 }
 
 /// Entry for the `worker` role: Redis-backed job runners (webhook delivery).
@@ -134,6 +179,7 @@ async fn build_repo(cfg: &Config) -> Result<Arc<dyn license_domain::repository::
 }
 
 /// Build the axum app: the v1 API router merged with health endpoints.
+#[allow(dead_code)]
 async fn build_app(cfg: &Config) -> Result<Router> {
     // Connect to the configured database + run migrations. The pool resolves
     // to the right backend (SQLite/Postgres/MySQL) from the URL scheme.

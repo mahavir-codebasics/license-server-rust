@@ -1809,13 +1809,16 @@ name = "license-grpc"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "license-crypto",
  "license-db",
  "license-domain",
  "prost",
  "serde",
+ "serde_json",
  "thiserror 2.0.19",
  "time",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-build",
  "tracing",
