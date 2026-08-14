@@ -81,9 +81,15 @@ pub fn router(state: AppState) -> Router {
             post(validate_license),
         )
         .route(
+            "/v1/accounts/:account_id/licenses/actions/validate-key",
+            post(validate_license_key),
+        )
+        .route(
             "/v1/accounts/:account_id/licenses/:license_id/actions/check-out",
             post(checkout_license),
         )
+        // — Machines (REST is read-only; activate/ping lifecycle is gRPC) —
+        .route("/v1/accounts/:account_id/machines", get(list_machines))
         .fallback(fallback)
         // Auth resolves the bearer -> AuthPrincipal (soft-fail: anonymous ok).
         .route_layer(middleware::from_fn_with_state(
@@ -391,16 +397,10 @@ pub struct CreateLicenseBody {
     pub max_uses: Option<u64>,
 }
 
-/// The response for license creation — includes the SIGNED KEY (returned once).
-#[derive(Debug, Serialize)]
-pub struct LicenseResponse {
-    #[serde(flatten)]
-    pub license: License,
-    /// Present only on creation/checkout — the signed key string, never
-    /// retrievable again.
-    #[serde(skip_serializing_if = "Option::is_none", rename = "key")]
-    pub key: Option<String>,
-}
+// NOTE: license creation returns `Envelope<License>` directly. The signed key
+// rides in `License.key` (present ONLY on the creation response; the field is
+// skipped whenever the license is fetched later — the server stores only the
+// key's SHA-256 hash, so it can never be returned again).
 
 async fn create_license(
     State(state): State<AppState>,
@@ -470,10 +470,9 @@ async fn create_license(
         json!({"id": license.id.to_string(), "policy_id": poid.to_string()}),
     );
 
-    let resp = Envelope::ok(LicenseResponse {
-        key: Some(signed.key),
-        license,
-    });
+    // `license.key` was set to the signed key above; it serializes on this
+    // creation response and never again.
+    let resp = Envelope::ok(license);
 
     // Cache the response for idempotent retries (best-effort).
     let body_str = serde_json::to_string(&resp).unwrap_or_default();
@@ -482,6 +481,26 @@ async fn create_license(
     }
 
     Ok(axum::response::IntoResponse::into_response(resp))
+}
+
+// ── Machines (read-only over REST; lifecycle over gRPC) ────────────────
+
+async fn list_machines(
+    State(state): State<AppState>,
+    auth: RequiresAuth,
+    Path(account_id): Path<String>,
+    query: Option<axum::extract::Query<crate::extract::PageParams>>,
+) -> ApiResult<EnvelopePage<Machine>> {
+    let principal = auth.0;
+    let aid = parse_account_id(&account_id)?;
+    if principal.account_id() != aid {
+        return Err(ApiError::forbidden(
+            "tokens may only list machines within their own account",
+        ));
+    }
+    let page = extract_page(query).await;
+    let result = state.repo.machines().list(aid, None, page).await?;
+    Ok(EnvelopePage::new(result.data, result.next_cursor))
 }
 
 async fn list_licenses(
@@ -520,6 +539,44 @@ async fn validate_license(
     let aid: AccountId = parse_account_id(&account_id)?;
     let lid: LicenseId = parse_license_id(&license_id)?;
     let license = state.repo.licenses().get(aid, lid).await?;
+    let now = time::OffsetDateTime::now_utc();
+    match license.validate_for_use(now) {
+        Ok(()) => Ok(Envelope::ok(ValidateResponse {
+            valid: true,
+            state: state_str(license.state),
+            detail: None,
+        })),
+        Err(e) => Ok(Envelope::ok(ValidateResponse {
+            valid: false,
+            state: state_str(license.state),
+            detail: Some(e.to_string()),
+        })),
+    }
+}
+
+/// `actions/validate-key` — validate by the RAW license key (device-side
+/// call; the SDK doesn't need to know the license id). Resolves via the
+/// SHA-256 key hash and re-checks the account matches the path.
+#[derive(Debug, Deserialize)]
+pub struct ValidateKeyBody {
+    pub key: String,
+}
+
+async fn validate_license_key(
+    State(state): State<AppState>,
+    Path(account_id): Path<String>,
+    Json(body): Json<ValidateKeyBody>,
+) -> ApiResult<Envelope<ValidateResponse>> {
+    let aid: AccountId = parse_account_id(&account_id)?;
+    if body.key.trim().is_empty() {
+        return Err(ApiError::bad_request("key is required"));
+    }
+    let hash = license_crypto::sha256_hex(body.key.as_bytes());
+    let license = state.repo.licenses().get_by_key_hash(&hash).await?;
+    // Cross-tenant keys must not validate against another account's path.
+    if license.account_id != aid {
+        return Err(ApiError::not_found("license not found"));
+    }
     let now = time::OffsetDateTime::now_utc();
     match license.validate_for_use(now) {
         Ok(()) => Ok(Envelope::ok(ValidateResponse {

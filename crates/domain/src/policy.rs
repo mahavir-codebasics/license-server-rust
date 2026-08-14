@@ -19,19 +19,24 @@ declare_id!(PolicyId, "Identifier of a [`Policy`].");
 /// See `license-crypto` for implementations. Ed25519 is the recommended
 /// default: smallest signatures, fastest verify, no parameters to misuse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "UPPERCASE")]
 pub enum PolicyScheme {
     #[default]
+    #[serde(rename = "ED25519_SIGN")]
     /// Ed25519 over the key bytes. ~64B signature. **Recommended.**
     Ed25519Sign,
+    #[serde(rename = "ECDSA_P256_SHA256")]
     /// ECDSA over NIST P-256 with SHA-256. FIPS-friendly.
     EcdsaP256Sha256,
+    #[serde(rename = "RSA_2048_PSS_SHA256")]
     /// RSA-2048 with RSASSA-PSS and SHA-256. Probabilistic, modern padding.
     Rsa2048PssSha256,
+    #[serde(rename = "RSA_2048_PKCS1V15_SHA256")]
     /// RSA-2048 with PKCS#1 v1.5 and SHA-256. Deterministic, legacy compat.
     Rsa2048Pkcs1v15Sha256,
+    #[serde(rename = "JWT_RS256")]
     /// Key is a JWT signed with RS256 (RSA-2048). The "key string" is a JWT.
     JwtRs256,
+    #[serde(rename = "JWT_EDDSA")]
     /// Key is a JWT signed with EdDSA (Ed25519). Compact JWT variant.
     JwtEddsa,
 }

@@ -22,6 +22,7 @@ members = [
     "crates/grpc",
     "crates/jobs",
     "crates/sso",
+    "crates/sdk",
     "crates/bin",
 ]
 default-members = ["crates/bin"]

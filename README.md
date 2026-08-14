@@ -77,6 +77,29 @@ cargo run -p license-server
 curl http://localhost:8080/healthz   # {"status":"ok"}
 ```
 
+Then follow [`docs/getting-started.md`](docs/getting-started.md) — bootstrap
+an org, issue a signed license, and validate it in under five minutes.
+
+## Documentation
+
+| Doc | What's inside |
+|---|---|
+| [Getting started](docs/getting-started.md) | 5-minute tour: org → product → policy → license → validate |
+| [API reference](docs/api-reference.md) | every REST endpoint + the gRPC service, envelopes, error codes, rate limits, idempotency |
+| [SDK guide](docs/sdk-guide.md) | Rust (`license-sdk`) + TypeScript (`@license-server/sdk`) clients |
+| [Architecture](docs/architecture.md) | crate layering, multi-DB/tenancy model, crypto, jobs, scale profile |
+| [Deployment](docs/deployment.md) | roles, config, production checklist |
+| [Webhooks](docs/webhooks.md) | HMAC signature verification (TS + Rust snippets), retries |
+| [Security & performance audit](docs/security-audit.md) | 15 evidence-cited findings + wrk-measured baselines + remediation order |
+
+## SDKs
+
+- **Rust** — [`crates/sdk`](crates/sdk) (`license-sdk`), self-contained, 3
+  E2E test suites that run against the real in-process server.
+- **TypeScript** — [`sdks/typescript`](sdks/typescript)
+  (`@license-server/sdk`), zero runtime deps (global fetch + WebCrypto),
+  13 tests + a live end-to-end example against the real server.
+
 ## Config
 
 All config via environment (prefix `LICENSE_SERVER__`, `__` = nesting), or

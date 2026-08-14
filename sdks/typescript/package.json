@@ -1,0 +1,33 @@
+{
+  "name": "@license-server/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript client SDK for license-server (self-hosted software licensing)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types test/*.test.ts"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "licensing",
+    "license-server",
+    "saas",
+    "ed25519"
+  ],
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22"
+  }
+}

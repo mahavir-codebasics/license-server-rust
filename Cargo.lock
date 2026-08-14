@@ -1853,6 +1853,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "license-sdk"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "license-api",
+ "license-db",
+ "license-domain",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "license-server"
 version = "0.1.0"
 dependencies = [
