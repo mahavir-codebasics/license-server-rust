@@ -32,3 +32,6 @@ tarpaulin-report.html
 
 # ZCode session artifacts
 .zcode/
+
+# Mimosa plugin artifacts
+.mimosa/
