@@ -101,7 +101,7 @@ impl LicenseService {
 }
 
 fn limit_bucket(id: &str) -> String {
-    format!("grpc:validate:{}", &id[..id.len().min(12)])
+    format!("grpc:validate:{id}")
 }
 
 #[tonic::async_trait]
@@ -606,9 +606,13 @@ mod tests {
     }
 
     #[test]
-    fn limit_bucket_truncates_to_twelve_chars() {
-        let long = "0123456789abcdef";
-        assert_eq!(limit_bucket(long), "grpc:validate:0123456789ab");
-        assert_eq!(limit_bucket("short"), "grpc:validate:short");
+    fn limit_bucket_embeds_full_id() {
+        // Same-millisecond UUIDv7s share their first 12 chars; truncation
+        // would collapse co-created licenses into one bucket (finding I1).
+        let long = "019f99f9-6063-7c02-bca9-04722c894a9c";
+        assert_eq!(limit_bucket(long), format!("grpc:validate:{long}"));
+        let a = "019f99f9-aaaa-7c02-bca9-04722c894a9c";
+        let b = "019f99f9-bbbb-7c02-bca9-04722c894a9c";
+        assert_ne!(limit_bucket(a), limit_bucket(b));
     }
 }

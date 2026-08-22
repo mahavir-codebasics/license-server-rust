@@ -15,6 +15,7 @@ pub mod client_ip;
 pub mod error;
 pub mod extract;
 pub mod idempotency;
+pub mod password_auth;
 pub mod rate_limit;
 pub mod response;
 pub mod routes;
