@@ -1,5 +1,8 @@
 # license-server-rust
 
+[![CI](https://github.com/<OWNER>/license-server-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/<OWNER>/license-server-rust/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+
 A performance-first, multi-tenant **software-licensing & distribution server**
 written in Rust — a self-hostable alternative to [keygen-sh/keygen-api].
 

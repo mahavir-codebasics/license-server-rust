@@ -23,6 +23,8 @@ uuid.workspace = true
 time.workspace = true
 bytes.workspace = true
 redis.workspace = true
+argon2.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

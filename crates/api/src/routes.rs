@@ -31,7 +31,8 @@ use tower_http::cors::{Any, CorsLayer};
 /// Build the v1 router with the given shared state. The auth middleware runs
 /// on every request (soft-fail: missing/invalid token → anonymous).
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let cors = build_cors(&state);
+    let app = Router::new()
         .route("/", get(root))
         // — Accounts (orgs) —
         .route("/v1/accounts", post(create_account).get(list_accounts))
@@ -102,14 +103,52 @@ pub fn router(state: AppState) -> Router {
             crate::rate_limit::middleware,
         ))
         .with_state(state)
-        // CORS: allow the admin UI (separate origin) to call the API. In
-        // production, restrict the origin instead of `Any`.
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        )
+        .layer(cors);
+    with_telemetry(app)
+}
+
+/// The telemetry stack: panic → JSON envelope, per-request tracing spans,
+/// `x-request-id` generation + propagation. Tuple order = outermost-first:
+/// CatchPanic wraps everything, and Set must sit outside Propagate or the id
+/// is generated downstream of Propagate's snapshot and never reaches the
+/// response. Apply AFTER merging any external routes — `Router::layer` only
+/// wraps routes registered before it.
+pub fn with_telemetry(router: Router) -> Router {
+    router.layer((
+        tower_http::catch_panic::CatchPanicLayer::custom(panic_envelope),
+        tower_http::trace::TraceLayer::new_for_http(),
+        tower_http::request_id::SetRequestIdLayer::x_request_id(
+            tower_http::request_id::MakeRequestUuid,
+        ),
+        tower_http::request_id::PropagateRequestIdLayer::x_request_id(),
+    ))
+}
+
+/// Panic hook → standard JSON error envelope instead of a reset socket.
+fn panic_envelope(_panic: Box<dyn std::any::Any + Send>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    crate::error::ApiError::internal("internal server error").into_response()
+}
+
+// ── CORS ──────────────────────────────────────────────────────────────
+/// Empty list = same-origin only (no CORS headers emitted). Non-empty =
+/// explicit allow-list. Wildcard "*" restores the old permissive mode for
+/// local dev explicitly.
+fn build_cors(state: &AppState) -> CorsLayer {
+    let origins: Vec<axum::http::HeaderValue> = state
+        .allowed_origins
+        .iter()
+        .filter(|o| o != &"*")
+        .filter_map(|o| o.parse().ok())
+        .collect();
+    let base = CorsLayer::new().allow_methods(Any).allow_headers(Any);
+    if state.allowed_origins.iter().any(|o| o == "*") {
+        base.allow_origin(Any)
+    } else if origins.is_empty() {
+        base // no cross-origin allowed
+    } else {
+        base.allow_origin(origins)
+    }
 }
 
 async fn root() -> Json<serde_json::Value> {
@@ -421,7 +460,7 @@ async fn create_license(
         .map(|s| s.to_string());
     if let Some(key) = idem_key.as_deref() {
         if let Some((status, body)) =
-            crate::idempotency::get_cached(state.redis.as_ref(), &aid.to_string(), key)
+            crate::idempotency::get_cached(state.redis.as_ref(), &aid.to_string(), key).await
         {
             return Ok(cached_response_raw(status, &body));
         }
@@ -446,8 +485,14 @@ async fn create_license(
 
     // 2. Generate a per-account keypair on the fly (scaffold). In Phase 4
     //    this is replaced by the account's persisted SigningKey via KeyStore.
-    let keypair =
-        Arc::new(KeyPair::generate(key_algorithm_for(policy.scheme)).map_err(crypto_err)?);
+    //    RSA schemes are expensive CPU — keep it off the tokio workers.
+    let algorithm = key_algorithm_for(policy.scheme);
+    let keypair = Arc::new(
+        tokio::task::spawn_blocking(move || KeyPair::generate(algorithm))
+            .await
+            .map_err(|e| ApiError::internal(format!("keygen task failed: {e}")))?
+            .map_err(crypto_err)?,
+    );
 
     // 3. Build the license, sign the key, persist.
     let mut license = License::new(aid, pid, poid);
@@ -477,7 +522,8 @@ async fn create_license(
     // Cache the response for idempotent retries (best-effort).
     let body_str = serde_json::to_string(&resp).unwrap_or_default();
     if let Some(key) = idem_key.as_deref() {
-        crate::idempotency::store(state.redis.as_ref(), &aid.to_string(), key, 200, &body_str);
+        crate::idempotency::store(state.redis.as_ref(), &aid.to_string(), key, 200, &body_str)
+            .await;
     }
 
     Ok(axum::response::IntoResponse::into_response(resp))
@@ -606,7 +652,12 @@ async fn checkout_license(
     // Rebuild a throwaway keypair for the same scheme (scaffold — Phase 4 uses
     // the account's persisted key). In a real deployment the verification key
     // is distributed to clients out-of-band (e.g. JWKS endpoint).
-    let keypair = KeyPair::generate(key_algorithm_for(policy.scheme)).map_err(crypto_err)?;
+    // RSA schemes are expensive CPU — keep it off the tokio workers.
+    let algorithm = key_algorithm_for(policy.scheme);
+    let keypair = tokio::task::spawn_blocking(move || KeyPair::generate(algorithm))
+        .await
+        .map_err(|e| ApiError::internal(format!("keygen task failed: {e}")))?
+        .map_err(crypto_err)?;
 
     // Body = JSON document with the license + issued/expiry meta.
     let now = time::OffsetDateTime::now_utc();

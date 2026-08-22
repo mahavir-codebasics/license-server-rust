@@ -1814,6 +1814,7 @@ dependencies = [
  "license-db",
  "license-domain",
  "prost",
+ "redis 0.27.6",
  "serde",
  "serde_json",
  "thiserror 2.0.19",

@@ -11,13 +11,15 @@
 //! under `/v1/accounts/{accountId}/...`.
 
 pub mod auth;
+pub mod client_ip;
 pub mod error;
 pub mod extract;
 pub mod idempotency;
+pub mod password_auth;
 pub mod rate_limit;
 pub mod response;
 pub mod routes;
 
 pub use error::{ApiError, ApiResult};
 pub use response::{Envelope, EnvelopePage, ErrorObject, Meta};
-pub use routes::router;
+pub use routes::{router, with_telemetry};

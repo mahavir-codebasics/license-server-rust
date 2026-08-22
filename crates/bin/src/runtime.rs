@@ -16,19 +16,17 @@ use axum::{
 use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::Arc;
+
+use redis::aio::ConnectionManager;
 use tokio::signal;
 use tracing::{error, info};
 
 /// Entry for the `api` role: HTTP REST + the gRPC hot-path server, concurrently.
 pub async fn run_api(cfg: &Config) -> Result<()> {
     let repo = build_repo(cfg).await?;
-    let state = build_state(cfg, repo.clone())?;
+    let (state, redis_mgr) = build_state(cfg, repo.clone()).await?;
     let master_secret = state.master_secret.clone();
-    let app = license_api::router(state).merge(
-        Router::new()
-            .route("/healthz", get(healthz))
-            .route("/readyz", get(readyz)),
-    );
+    let app = compose_http(license_api::router(state));
 
     let http_addr: SocketAddr = format!("{}:{}", cfg.http.host, cfg.http.port)
         .parse()
@@ -37,16 +35,16 @@ pub async fn run_api(cfg: &Config) -> Result<()> {
         .parse()
         .context("invalid grpc bind address")?;
 
-    // gRPC hot path (tonic). Shares the same master secret as the REST API.
+    // gRPC hot path (tonic). Shares the same master secret as the REST API and
+    // the same Redis handle for validate rate limiting (fail-open when absent).
     let grpc_svc = license_grpc::proto::license_service_server::LicenseServiceServer::new(
-        license_grpc::LicenseService::new(repo.clone(), master_secret),
+        license_grpc::LicenseService::new(repo.clone(), master_secret).with_limits(redis_mgr),
     );
-    // gRPC binds its own listener internally via .serve(addr).
     info!(addr = %grpc_addr, "grpc listening");
     let grpc_task = tokio::spawn(async move {
         tonic::transport::Server::builder()
             .add_service(grpc_svc)
-            .serve(grpc_addr)
+            .serve_with_shutdown(grpc_addr, shutdown_signal())
             .await
             .context("grpc server")
     });
@@ -57,10 +55,13 @@ pub async fn run_api(cfg: &Config) -> Result<()> {
         .with_context(|| format!("binding http {http_addr}"))?;
     info!(addr = %http_addr, "http listening");
     let http_task = tokio::spawn(async move {
-        axum::serve(http_listener, app.into_make_service())
-            .with_graceful_shutdown(shutdown_signal())
-            .await
-            .context("http server")
+        axum::serve(
+            http_listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .context("http server")
     });
 
     // Return when either errors.
@@ -111,7 +112,7 @@ pub async fn run_all(cfg: &Config) -> Result<()> {
     preflight(cfg).await?;
 
     let repo = build_repo(cfg).await?;
-    let state = build_state(cfg, repo.clone())?;
+    let (state, _redis_mgr) = build_state(cfg, repo.clone()).await?;
 
     // API task.
     let api_router = license_api::router(state);
@@ -126,11 +127,7 @@ pub async fn run_all(cfg: &Config) -> Result<()> {
     let api_task = tokio::spawn(async move {
         axum::serve(
             api_listener,
-            api_router.merge(
-                Router::new()
-                    .route("/healthz", get(healthz))
-                    .route("/readyz", get(readyz)),
-            ),
+            compose_http(api_router).into_make_service_with_connect_info::<SocketAddr>(),
         )
         .with_graceful_shutdown(shutdown_signal())
         .await
@@ -163,33 +160,48 @@ pub async fn run_all(cfg: &Config) -> Result<()> {
 /// Connect to the configured DB, run migrations, and return a backend-agnostic
 /// `Arc<dyn Repository>`. Shared by every role.
 async fn build_repo(cfg: &Config) -> Result<Arc<dyn license_domain::repository::Repository>> {
-    Ok(license_db::Pool::connect(&cfg.database.url)
-        .await
-        .context("connecting database")?
-        .into_repository())
+    Ok(
+        license_db::Pool::connect(&cfg.database.url, cfg.database.max_connections)
+            .await
+            .context("connecting database")?
+            .into_repository(),
+    )
 }
 
 /// Build the AppState from config: DB repo + decoded master secret + optional
 /// Redis client (for rate limiting + idempotency). Redis is best-effort — if
 /// it's unreachable, the API still works (rate limiting + idempotency no-op).
-fn build_state(
+/// Returns the state plus a clone of the manager so secondary consumers (gRPC)
+/// share the same multiplexed connection.
+async fn build_state(
     cfg: &Config,
     repo: Arc<dyn license_domain::repository::Repository>,
-) -> Result<license_api::extract::AppState> {
+) -> Result<(license_api::extract::AppState, Option<ConnectionManager>)> {
     let master_secret =
         decode_master_secret(&cfg.crypto.master_key).context("decoding master key")?;
     let mut state = license_api::extract::AppState::new(repo, master_secret);
+    state = state.with_trusted_proxies(cfg.security.trusted_proxies);
+    state.allowed_origins = license_api::extract::parse_origin_csv(&cfg.security.allowed_origins);
+    let mut redis_mgr: Option<ConnectionManager> = None;
     if !cfg.redis.url.is_empty() {
         match redis::Client::open(cfg.redis.url.as_str()) {
-            Ok(client) => {
-                state = state.with_redis(client);
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "redis client init failed; rate limiting/idempotency disabled");
-            }
+            Ok(client) => match ConnectionManager::new(client).await {
+                Ok(mgr) => {
+                    redis_mgr = Some(mgr.clone());
+                    state = state.with_redis(mgr);
+                }
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "redis unreachable; rate limiting/idempotency disabled"
+                ),
+            },
+            Err(e) => tracing::warn!(
+                error = %e,
+                "redis url invalid; rate limiting/idempotency disabled"
+            ),
         }
     }
-    Ok(state)
+    Ok((state, redis_mgr))
 }
 
 /// Build the axum app: the v1 API router merged with health endpoints.
@@ -197,19 +209,32 @@ fn build_state(
 async fn build_app(cfg: &Config) -> Result<Router> {
     // Connect to the configured database + run migrations. The pool resolves
     // to the right backend (SQLite/Postgres/MySQL) from the URL scheme.
-    let pool = license_db::Pool::connect(&cfg.database.url)
+    let pool = license_db::Pool::connect(&cfg.database.url, cfg.database.max_connections)
         .await
         .context("connecting database")?;
     let repo = pool.into_repository();
 
     // Decode the master key + build the AppState (repo + master secret + Redis).
-    let state = build_state(cfg, repo)?;
+    let (state, _redis_mgr) = build_state(cfg, repo).await?;
 
     let api = license_api::router(state);
-    Ok(Router::new()
-        .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz))
-        .merge(api))
+    Ok(compose_http(api))
+}
+
+/// Compose the served HTTP app: the v1 API router merged with the health
+/// endpoints. Each side wraps its OWN routes in the telemetry stack before
+/// merging (`Router::layer` skips post-merge routes, so wrapping only the
+/// composed router would double-wrap what `router()` already covered).
+fn compose_http(api: Router) -> Router {
+    api.merge(health_router())
+}
+
+fn health_router() -> Router {
+    license_api::with_telemetry(
+        Router::new()
+            .route("/healthz", get(healthz))
+            .route("/readyz", get(readyz)),
+    )
 }
 
 /// Decode a 64-char hex string into 32 bytes. Returns a zeroed key if unset
@@ -281,5 +306,41 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => info!("received SIGINT, shutting down"),
         _ = terminate => info!("received SIGTERM, shutting down"),
+    }
+}
+
+#[cfg(test)]
+mod http_composition {
+    use super::*;
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+
+    /// Health routes must ride the same telemetry stack as the v1 API
+    /// (`x-request-id` present) even though they're merged in from outside
+    /// `license_api::router`.
+    #[tokio::test]
+    async fn health_routes_carry_request_id() {
+        let res = compose_http(Router::new())
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(res.headers().contains_key("x-request-id"));
+    }
+
+    /// Unmatched routes through the composed app still get the standard JSON
+    /// error envelope shape (api fallback), not an empty body.
+    #[tokio::test]
+    async fn unmatched_route_returns_envelope_fallback() {
+        let res = compose_http(Router::new())
+            .oneshot(Request::builder().uri("/nope").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::NOT_FOUND);
+        assert!(res.headers().contains_key("x-request-id"));
     }
 }

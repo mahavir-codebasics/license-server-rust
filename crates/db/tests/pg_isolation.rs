@@ -49,7 +49,7 @@ async fn fresh_repo() -> Option<PostgresRepository> {
         eprintln!("[pg_isolation] skipped: no DATABASE_URL / LICENSE_TEST_PG_URL");
         return None;
     };
-    match Pool::connect(&url).await {
+    match Pool::connect(&url, 8).await {
         Ok(p) => Some(PostgresRepository::from(p)),
         Err(e) => {
             eprintln!("[pg_isolation] skipped: could not connect to Postgres ({url}): {e}");

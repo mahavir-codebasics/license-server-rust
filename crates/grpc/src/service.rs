@@ -35,10 +35,29 @@ use tonic::{Request, Response, Status, Streaming};
 /// Type alias for the boxed stream returned by CheckOut.
 type TonicStream<T> = Pin<Box<dyn tokio_stream::Stream<Item = Result<T, Status>> + Send + 'static>>;
 
+/// Per-license validate budget: fixed window of 2000/min per key or license.
+const VALIDATE_LIMIT_CAPACITY: u64 = 2000;
+const VALIDATE_WINDOW_SECS: u64 = 60;
+/// Max key length accepted on ValidateKey — anything longer is garbage/abuse
+/// and would burn a sha256 + DB lookup before rejection.
+const MAX_KEY_LEN: usize = 1024;
+
+// Atomic fixed-window arming: INCR + EXPIRE in one round-trip. Re-arms any
+// bucket whose TTL was lost to a partial failure (TTL < 0), so a limiter
+// fault can never wedge it into permanent rejection.
+const ARM_WINDOW_SCRIPT: &str = "
+local v = redis.call('INCR', KEYS[1])
+if v == 1 or redis.call('TTL', KEYS[1]) < 0 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return v
+";
+
 /// A gRPC LicenseService backed by a Repository + master secret.
 pub struct LicenseService {
     pub repo: Arc<dyn Repository>,
     pub master_secret: Arc<[u8; 32]>,
+    limits: Option<redis::aio::ConnectionManager>,
 }
 
 impl LicenseService {
@@ -46,8 +65,43 @@ impl LicenseService {
         Self {
             repo,
             master_secret,
+            limits: None,
         }
     }
+
+    pub fn with_limits(mut self, redis: Option<redis::aio::ConnectionManager>) -> Self {
+        self.limits = redis;
+        self
+    }
+
+    /// Fixed-window counter for a validate path. Fail-open: Redis absent or
+    /// faulting must never block legitimate validation. Mirrors
+    /// license_api::rate_limit::check (duplicated to avoid an api dep).
+    async fn check_validate_limit(&self, id: &str) -> Result<(), Status> {
+        let Some(mut conn) = self.limits.clone() else {
+            return Ok(());
+        };
+        let key = limit_bucket(id);
+        let count: Option<i64> = redis::Script::new(ARM_WINDOW_SCRIPT)
+            .key(&key)
+            .arg(VALIDATE_WINDOW_SECS)
+            .invoke_async(&mut conn)
+            .await
+            .ok();
+        let Some(count) = count else {
+            return Ok(());
+        };
+        if count as u64 > VALIDATE_LIMIT_CAPACITY {
+            // Generic on purpose: no bucket detail back to the caller.
+            Err(Status::unavailable("try again later"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn limit_bucket(id: &str) -> String {
+    format!("grpc:validate:{id}")
 }
 
 #[tonic::async_trait]
@@ -59,6 +113,7 @@ impl Trait for LicenseService {
         let r = req.into_inner();
         let aid = parse_uuid(&r.account_id, "account_id")?;
         let lid = parse_uuid(&r.license_id, "license_id")?;
+        self.check_validate_limit(&lid.to_string()).await?;
         let license = self
             .repo
             .licenses()
@@ -86,13 +141,25 @@ impl Trait for LicenseService {
         if r.key.is_empty() {
             return Err(Status::invalid_argument("key is required"));
         }
+        if r.key.len() > MAX_KEY_LEN {
+            return Err(Status::invalid_argument("key exceeds maximum length"));
+        }
         let key_hash = license_crypto::sha256_hex(r.key.as_bytes());
+        self.check_validate_limit(&key_hash).await?;
         let license = self
             .repo
             .licenses()
             .get_by_key_hash(&key_hash)
             .await
-            .map_err(domain_to_status)?;
+            .map_err(|e| match e {
+                // Generic by design: never echo domain details (ids, hashes)
+                // back to an unauthenticated key-holder.
+                license_domain::DomainError::NotFound(_)
+                | license_domain::DomainError::CrossTenant(_) => {
+                    Status::not_found("license not found")
+                }
+                other => domain_to_status(other),
+            })?;
         let now = OffsetDateTime::now_utc();
         let (valid, detail) = match license.validate_for_use(now) {
             Ok(()) => (true, String::new()),
@@ -463,4 +530,89 @@ fn to_license_info(l: &License) -> LicenseInfo {
 fn rfc3339(t: OffsetDateTime) -> String {
     t.format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use license_db::{Pool, SqliteRepository};
+    use license_domain::repository::Repository;
+    use license_domain::{Account, License, Policy, PolicyScheme, Product};
+
+    async fn fresh_repo() -> Arc<dyn Repository> {
+        let pool = Pool::sqlite_in_memory().await.unwrap();
+        Arc::new(SqliteRepository::from(pool))
+    }
+
+    // Mirrors grpc_e2e::seed — keep in sync.
+    async fn seed(repo: &Arc<dyn Repository>) -> String {
+        let account = Account::new("grpc-co", "gRPCCo");
+        repo.accounts().create(&account).await.unwrap();
+        let product = Product::new(account.id, "P");
+        repo.products().create(&product).await.unwrap();
+        let policy = Policy::new(account.id, product.id, "pol", PolicyScheme::Ed25519Sign);
+        repo.policies().create(&policy).await.unwrap();
+        let keypair =
+            license_crypto::KeyPair::generate(license_crypto::KeyAlgorithm::Ed25519).unwrap();
+        let signed = license_crypto::sign_license_key(
+            license_crypto::KeyScheme::Ed25519,
+            &keypair,
+            "seed-lic",
+            &account.id.to_string(),
+        )
+        .unwrap();
+        let mut license = License::new(account.id, product.id, policy.id);
+        license.key_hash = signed.key_hash.clone();
+        repo.licenses().create(&license).await.unwrap();
+        signed.key
+    }
+
+    #[tokio::test]
+    async fn validate_key_rejects_oversize_key() {
+        let svc = LicenseService::new(fresh_repo().await, Arc::new([0x42u8; 32]));
+        let err = svc
+            .validate_key(Request::new(ValidateKeyRequest {
+                key: "x".repeat(1025),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert_eq!(err.message(), "key exceeds maximum length");
+    }
+
+    #[tokio::test]
+    async fn validate_key_still_validates_without_redis() {
+        let repo = fresh_repo().await;
+        let key = seed(&repo).await;
+        let svc = LicenseService::new(repo, Arc::new([0x42u8; 32])).with_limits(None);
+        let resp = svc
+            .validate_key(Request::new(ValidateKeyRequest { key }))
+            .await
+            .unwrap();
+        assert!(resp.into_inner().valid);
+    }
+
+    #[tokio::test]
+    async fn validate_key_unknown_key_maps_to_generic_not_found() {
+        let svc = LicenseService::new(fresh_repo().await, Arc::new([0x42u8; 32]));
+        let err = svc
+            .validate_key(Request::new(ValidateKeyRequest {
+                key: "no-such-key".into(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+        assert_eq!(err.message(), "license not found");
+    }
+
+    #[test]
+    fn limit_bucket_embeds_full_id() {
+        // Same-millisecond UUIDv7s share their first 12 chars; truncation
+        // would collapse co-created licenses into one bucket (finding I1).
+        let long = "019f99f9-6063-7c02-bca9-04722c894a9c";
+        assert_eq!(limit_bucket(long), format!("grpc:validate:{long}"));
+        let a = "019f99f9-aaaa-7c02-bca9-04722c894a9c";
+        let b = "019f99f9-bbbb-7c02-bca9-04722c894a9c";
+        assert_ne!(limit_bucket(a), limit_bucket(b));
+    }
 }

@@ -12,6 +12,7 @@ tonic.workspace = true
 prost.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
+redis.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -26,3 +27,4 @@ tonic-build.workspace = true
 [dev-dependencies]
 tokio-stream.workspace = true
 license-crypto.workspace = true
+license-db.workspace = true
