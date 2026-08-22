@@ -485,8 +485,14 @@ async fn create_license(
 
     // 2. Generate a per-account keypair on the fly (scaffold). In Phase 4
     //    this is replaced by the account's persisted SigningKey via KeyStore.
-    let keypair =
-        Arc::new(KeyPair::generate(key_algorithm_for(policy.scheme)).map_err(crypto_err)?);
+    //    RSA schemes are expensive CPU — keep it off the tokio workers.
+    let algorithm = key_algorithm_for(policy.scheme);
+    let keypair = Arc::new(
+        tokio::task::spawn_blocking(move || KeyPair::generate(algorithm))
+            .await
+            .map_err(|e| ApiError::internal(format!("keygen task failed: {e}")))?
+            .map_err(crypto_err)?,
+    );
 
     // 3. Build the license, sign the key, persist.
     let mut license = License::new(aid, pid, poid);
@@ -646,7 +652,12 @@ async fn checkout_license(
     // Rebuild a throwaway keypair for the same scheme (scaffold — Phase 4 uses
     // the account's persisted key). In a real deployment the verification key
     // is distributed to clients out-of-band (e.g. JWKS endpoint).
-    let keypair = KeyPair::generate(key_algorithm_for(policy.scheme)).map_err(crypto_err)?;
+    // RSA schemes are expensive CPU — keep it off the tokio workers.
+    let algorithm = key_algorithm_for(policy.scheme);
+    let keypair = tokio::task::spawn_blocking(move || KeyPair::generate(algorithm))
+        .await
+        .map_err(|e| ApiError::internal(format!("keygen task failed: {e}")))?
+        .map_err(crypto_err)?;
 
     // Body = JSON document with the license + issued/expiry meta.
     let now = time::OffsetDateTime::now_utc();
