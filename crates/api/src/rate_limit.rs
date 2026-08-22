@@ -15,10 +15,21 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use redis::{aio::ConnectionManager, AsyncCommands};
+use redis::aio::ConnectionManager;
 
 use crate::auth::AuthPrincipal;
 use crate::extract::AppState;
+
+// Atomic fixed-window arming: INCR + EXPIRE in one round-trip. Re-arms any
+// bucket whose TTL was lost to a partial failure (TTL < 0), so a limiter
+// fault can never wedge it into permanent rejection.
+const ARM_WINDOW_SCRIPT: &str = "
+local v = redis.call('INCR', KEYS[1])
+if v == 1 or redis.call('TTL', KEYS[1]) < 0 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return v
+";
 
 /// Per-class limits. `capacity` = burst, `refill_secs` = window.
 #[derive(Debug, Clone, Copy)]
@@ -62,18 +73,19 @@ pub async fn check(
         return Ok(());
     };
     let key = format!("ratelimit:{account_key}:{class}");
-    let count: Option<i64> = conn.incr(&key, 1u64).await.ok();
+    // Atomic arming: INCR + conditional EXPIRE in one round-trip; re-arms
+    // buckets whose TTL was lost to a partial failure, so a limiter fault
+    // can never wedge them into permanent rejection.
+    let count: Option<i64> = redis::Script::new(ARM_WINDOW_SCRIPT)
+        .key(&key)
+        .arg(limit.refill_secs)
+        .invoke_async(&mut conn)
+        .await
+        .ok();
     let Some(count) = count else {
         // Redis fault: fail OPEN (don't break the API for a limiter fault).
         return Ok(());
     };
-    if count == 1 {
-        let _: Result<(), _> = redis::pipe()
-            .atomic()
-            .expire(&key, limit.refill_secs as i64)
-            .query_async(&mut conn)
-            .await;
-    }
     if count as u32 > limit.capacity {
         // Bucket exhausted — return the window length as retry-after.
         Err(limit.refill_secs)

@@ -25,7 +25,6 @@ use proto::{
     DeactivateRequest, DeactivateResponse, LicenseInfo, MachineResponse, PingRequest, PingResponse,
     ValidateKeyRequest, ValidateRequest, ValidateResponse,
 };
-use redis::AsyncCommands;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -42,6 +41,17 @@ const VALIDATE_WINDOW_SECS: u64 = 60;
 /// Max key length accepted on ValidateKey — anything longer is garbage/abuse
 /// and would burn a sha256 + DB lookup before rejection.
 const MAX_KEY_LEN: usize = 1024;
+
+// Atomic fixed-window arming: INCR + EXPIRE in one round-trip. Re-arms any
+// bucket whose TTL was lost to a partial failure (TTL < 0), so a limiter
+// fault can never wedge it into permanent rejection.
+const ARM_WINDOW_SCRIPT: &str = "
+local v = redis.call('INCR', KEYS[1])
+if v == 1 or redis.call('TTL', KEYS[1]) < 0 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return v
+";
 
 /// A gRPC LicenseService backed by a Repository + master secret.
 pub struct LicenseService {
@@ -72,17 +82,15 @@ impl LicenseService {
             return Ok(());
         };
         let key = limit_bucket(id);
-        let count: Option<i64> = conn.incr(&key, 1u64).await.ok();
+        let count: Option<i64> = redis::Script::new(ARM_WINDOW_SCRIPT)
+            .key(&key)
+            .arg(VALIDATE_WINDOW_SECS)
+            .invoke_async(&mut conn)
+            .await
+            .ok();
         let Some(count) = count else {
             return Ok(());
         };
-        if count == 1 {
-            let _: Result<(), _> = redis::pipe()
-                .atomic()
-                .expire(&key, VALIDATE_WINDOW_SECS as i64)
-                .query_async(&mut conn)
-                .await;
-        }
         if count as u64 > VALIDATE_LIMIT_CAPACITY {
             // Generic on purpose: no bucket detail back to the caller.
             Err(Status::unavailable("try again later"))
