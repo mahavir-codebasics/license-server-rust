@@ -26,11 +26,7 @@ pub async fn run_api(cfg: &Config) -> Result<()> {
     let repo = build_repo(cfg).await?;
     let state = build_state(cfg, repo.clone()).await?;
     let master_secret = state.master_secret.clone();
-    let app = license_api::router(state).merge(
-        Router::new()
-            .route("/healthz", get(healthz))
-            .route("/readyz", get(readyz)),
-    );
+    let app = compose_http(license_api::router(state));
 
     let http_addr: SocketAddr = format!("{}:{}", cfg.http.host, cfg.http.port)
         .parse()
@@ -131,13 +127,7 @@ pub async fn run_all(cfg: &Config) -> Result<()> {
     let api_task = tokio::spawn(async move {
         axum::serve(
             api_listener,
-            api_router
-                .merge(
-                    Router::new()
-                        .route("/healthz", get(healthz))
-                        .route("/readyz", get(readyz)),
-                )
-                .into_make_service_with_connect_info::<SocketAddr>(),
+            compose_http(api_router).into_make_service_with_connect_info::<SocketAddr>(),
         )
         .with_graceful_shutdown(shutdown_signal())
         .await
@@ -220,10 +210,23 @@ async fn build_app(cfg: &Config) -> Result<Router> {
     let state = build_state(cfg, repo).await?;
 
     let api = license_api::router(state);
-    Ok(Router::new()
-        .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz))
-        .merge(api))
+    Ok(compose_http(api))
+}
+
+/// Compose the served HTTP app: the v1 API router merged with the health
+/// endpoints. Each side wraps its OWN routes in the telemetry stack before
+/// merging (`Router::layer` skips post-merge routes, so wrapping only the
+/// composed router would double-wrap what `router()` already covered).
+fn compose_http(api: Router) -> Router {
+    api.merge(health_router())
+}
+
+fn health_router() -> Router {
+    license_api::with_telemetry(
+        Router::new()
+            .route("/healthz", get(healthz))
+            .route("/readyz", get(readyz)),
+    )
 }
 
 /// Decode a 64-char hex string into 32 bytes. Returns a zeroed key if unset
@@ -295,5 +298,41 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => info!("received SIGINT, shutting down"),
         _ = terminate => info!("received SIGTERM, shutting down"),
+    }
+}
+
+#[cfg(test)]
+mod http_composition {
+    use super::*;
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+
+    /// Health routes must ride the same telemetry stack as the v1 API
+    /// (`x-request-id` present) even though they're merged in from outside
+    /// `license_api::router`.
+    #[tokio::test]
+    async fn health_routes_carry_request_id() {
+        let res = compose_http(Router::new())
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(res.headers().contains_key("x-request-id"));
+    }
+
+    /// Unmatched routes through the composed app still get the standard JSON
+    /// error envelope shape (api fallback), not an empty body.
+    #[tokio::test]
+    async fn unmatched_route_returns_envelope_fallback() {
+        let res = compose_http(Router::new())
+            .oneshot(Request::builder().uri("/nope").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::NOT_FOUND);
+        assert!(res.headers().contains_key("x-request-id"));
     }
 }
