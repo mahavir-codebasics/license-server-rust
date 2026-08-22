@@ -24,6 +24,9 @@ pub struct AppState {
     /// How many reverse-proxy hops sit directly in front of us; controls
     /// X-Forwarded-For trust when keying anonymous rate-limit buckets.
     pub trusted_proxies: usize,
+    /// CORS origins allowed to call the API (parsed from config csv).
+    /// Empty = same-origin only; `"*"` = allow any origin.
+    pub allowed_origins: Vec<String>,
 }
 
 impl AppState {
@@ -33,6 +36,7 @@ impl AppState {
             master_secret: Arc::new(master_secret),
             redis: None,
             trusted_proxies: 0,
+            allowed_origins: Vec::new(),
         }
     }
 
@@ -69,4 +73,28 @@ impl PageParams {
 /// Extract pagination from the query string.
 pub async fn extract_page(query: Option<Query<PageParams>>) -> PageQuery {
     query.map(|q| q.0.into_query()).unwrap_or_default()
+}
+
+/// Parse the config's comma-separated origin list: trims whitespace, drops
+/// empty entries, lowercases scheme+host (origins are case-insensitive).
+pub fn parse_origin_csv(csv: &str) -> Vec<String> {
+    csv.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_ascii_lowercase())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_origin_csv;
+
+    #[test]
+    fn origin_csv_parses_and_normalizes() {
+        assert_eq!(parse_origin_csv(""), Vec::<String>::new());
+        assert_eq!(
+            parse_origin_csv(" https://Admin.Example.com ,,https://b.dev"),
+            vec!["https://admin.example.com".to_string(), "https://b.dev".to_string()]
+        );
+    }
 }

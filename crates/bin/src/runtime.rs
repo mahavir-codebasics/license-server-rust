@@ -187,6 +187,7 @@ async fn build_state(
         decode_master_secret(&cfg.crypto.master_key).context("decoding master key")?;
     let mut state = license_api::extract::AppState::new(repo, master_secret);
     state = state.with_trusted_proxies(cfg.security.trusted_proxies);
+    state.allowed_origins = license_api::extract::parse_origin_csv(&cfg.security.allowed_origins);
     if !cfg.redis.url.is_empty() {
         match redis::Client::open(cfg.redis.url.as_str()) {
             Ok(client) => match ConnectionManager::new(client).await {

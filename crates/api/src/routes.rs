@@ -31,6 +31,7 @@ use tower_http::cors::{Any, CorsLayer};
 /// Build the v1 router with the given shared state. The auth middleware runs
 /// on every request (soft-fail: missing/invalid token → anonymous).
 pub fn router(state: AppState) -> Router {
+    let cors = build_cors(&state);
     Router::new()
         .route("/", get(root))
         // — Accounts (orgs) —
@@ -102,14 +103,28 @@ pub fn router(state: AppState) -> Router {
             crate::rate_limit::middleware,
         ))
         .with_state(state)
-        // CORS: allow the admin UI (separate origin) to call the API. In
-        // production, restrict the origin instead of `Any`.
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        )
+        .layer(cors)
+}
+
+// ── CORS ──────────────────────────────────────────────────────────────
+/// Empty list = same-origin only (no CORS headers emitted). Non-empty =
+/// explicit allow-list. Wildcard "*" restores the old permissive mode for
+/// local dev explicitly.
+fn build_cors(state: &AppState) -> CorsLayer {
+    let origins: Vec<axum::http::HeaderValue> = state
+        .allowed_origins
+        .iter()
+        .filter(|o| o != &"*")
+        .filter_map(|o| o.parse().ok())
+        .collect();
+    let base = CorsLayer::new().allow_methods(Any).allow_headers(Any);
+    if state.allowed_origins.iter().any(|o| o == "*") {
+        base.allow_origin(Any)
+    } else if origins.is_empty() {
+        base // no cross-origin allowed
+    } else {
+        base.allow_origin(origins)
+    }
 }
 
 async fn root() -> Json<serde_json::Value> {
