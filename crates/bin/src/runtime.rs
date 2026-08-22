@@ -59,10 +59,13 @@ pub async fn run_api(cfg: &Config) -> Result<()> {
         .with_context(|| format!("binding http {http_addr}"))?;
     info!(addr = %http_addr, "http listening");
     let http_task = tokio::spawn(async move {
-        axum::serve(http_listener, app.into_make_service())
-            .with_graceful_shutdown(shutdown_signal())
-            .await
-            .context("http server")
+        axum::serve(
+            http_listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .context("http server")
     });
 
     // Return when either errors.
@@ -128,11 +131,13 @@ pub async fn run_all(cfg: &Config) -> Result<()> {
     let api_task = tokio::spawn(async move {
         axum::serve(
             api_listener,
-            api_router.merge(
-                Router::new()
-                    .route("/healthz", get(healthz))
-                    .route("/readyz", get(readyz)),
-            ),
+            api_router
+                .merge(
+                    Router::new()
+                        .route("/healthz", get(healthz))
+                        .route("/readyz", get(readyz)),
+                )
+                .into_make_service_with_connect_info::<SocketAddr>(),
         )
         .with_graceful_shutdown(shutdown_signal())
         .await
@@ -181,6 +186,7 @@ async fn build_state(
     let master_secret =
         decode_master_secret(&cfg.crypto.master_key).context("decoding master key")?;
     let mut state = license_api::extract::AppState::new(repo, master_secret);
+    state = state.with_trusted_proxies(cfg.security.trusted_proxies);
     if !cfg.redis.url.is_empty() {
         match redis::Client::open(cfg.redis.url.as_str()) {
             Ok(client) => match ConnectionManager::new(client).await {

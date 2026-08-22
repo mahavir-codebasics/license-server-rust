@@ -21,6 +21,9 @@ pub struct AppState {
     pub master_secret: Arc<[u8; 32]>,
     /// Multiplexed async Redis connection (rate limiting + idempotency).
     pub redis: Option<ConnectionManager>,
+    /// How many reverse-proxy hops sit directly in front of us; controls
+    /// X-Forwarded-For trust when keying anonymous rate-limit buckets.
+    pub trusted_proxies: usize,
 }
 
 impl AppState {
@@ -29,11 +32,17 @@ impl AppState {
             repo,
             master_secret: Arc::new(master_secret),
             redis: None,
+            trusted_proxies: 0,
         }
     }
 
     pub fn with_redis(mut self, redis: ConnectionManager) -> Self {
         self.redis = Some(redis);
+        self
+    }
+
+    pub fn with_trusted_proxies(mut self, n: usize) -> Self {
+        self.trusted_proxies = n;
         self
     }
 }

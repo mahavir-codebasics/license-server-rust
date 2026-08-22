@@ -90,19 +90,26 @@ pub async fn middleware(State(state): State<AppState>, req: Request, next: Next)
     let path = req.uri().path().to_string();
     let limit = limit_for(method.as_str(), &path);
 
-    // Pick a key: the principal's account if authenticated, else the client IP.
-    let bucket_key = req
+    // Pick a key: the principal's account if authenticated, else a
+    // trusted-proxy-aware client IP (never raw spoofable XFF).
+    let principal_bucket = req
         .extensions()
         .get::<AuthPrincipal>()
-        .map(|p| format!("acc:{}", p.account_id()))
-        .or_else(|| {
-            // Fall back to the forwarding IP (best-effort).
-            req.headers()
+        .map(|p| format!("acc:{}", p.account_id()));
+    let bucket_key = match principal_bucket {
+        Some(k) => k,
+        None => {
+            let peer = req
+                .extensions()
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|c| c.0.ip());
+            let xff = req
+                .headers()
                 .get("x-forwarded-for")
-                .and_then(|h| h.to_str().ok())
-                .map(|s| format!("ip:{}", s.split(',').next().unwrap_or("unknown").trim()))
-        })
-        .unwrap_or_else(|| "anon".to_string());
+                .and_then(|h| h.to_str().ok());
+            crate::client_ip::client_bucket_key(state.trusted_proxies, xff, peer)
+        }
+    };
 
     let class = format!("{}:{}", method, path_to_class(&path));
     if let Err(retry_after) = check(state.redis.as_ref(), &bucket_key, &class, limit).await {

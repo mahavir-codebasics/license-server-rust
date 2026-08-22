@@ -123,6 +123,18 @@ pub struct TelemetryConfig {
     pub otlp_endpoint: Option<String>,
 }
 
+/// Comma-separated CORS origins allowed to call the API + reverse-proxy hop
+/// count governing XFF trust (see `client_ip`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SecurityConfig {
+    /// Comma-separated CORS origins allowed to call the API. Empty = same-origin only.
+    #[serde(default)]
+    pub allowed_origins: String,
+    /// How many reverse-proxy hops sit directly in front of us (XFF trust).
+    #[serde(default)]
+    pub trusted_proxies: usize,
+}
+
 /// Top-level config.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Config {
@@ -139,6 +151,8 @@ pub struct Config {
     pub log: LogConfig,
     #[serde(default)]
     pub telemetry: TelemetryConfig,
+    #[serde(default)]
+    pub security: SecurityConfig,
 }
 
 impl Config {
