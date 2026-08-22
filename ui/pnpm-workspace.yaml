@@ -1,0 +1,6 @@
+# pnpm 10 reads these settings here — the package.json "pnpm" field is
+# ignored since v10. Without this file, dependency build scripts (sharp,
+# unrs-resolver) are refused outright in CI mode (ERR_PNPM_IGNORED_BUILDS).
+onlyBuiltDependencies:
+  - sharp
+  - unrs-resolver
