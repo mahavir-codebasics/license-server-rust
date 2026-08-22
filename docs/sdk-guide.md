@@ -5,8 +5,8 @@ the same REST wire format — pick your language; behavior is identical.
 
 | SDK | Location | Runtime deps | Tests |
 |---|---|---|---|
-| **Rust** (`license-sdk`) | [`crates/sdk`](../crates/sdk) | reqwest, serde | 3 E2E suites against the real in-process server |
-| **TypeScript** (`@license-server/sdk`) | [`sdks/typescript`](../sdks/typescript) | **zero** (global fetch + WebCrypto) | 13 (wire tests + HMAC verification vectors) |
+| **Rust** (`license-sdk`) | [`crates/sdk`](https://github.com/mahavirvataliya/license-server-rust/tree/main/crates/sdk) | reqwest, serde | 3 E2E suites against the real in-process server |
+| **TypeScript** (`@license-server/sdk`) | [`sdks/typescript`](https://github.com/mahavirvataliya/license-server-rust/tree/main/sdks/typescript) | **zero** (global fetch + WebCrypto) | 13 (wire tests + HMAC verification vectors) |
 
 Both SDKs also verified live against a real `license-server` binary (the
 TypeScript `examples/issue-and-validate.ts` runs the complete round trip).
@@ -140,7 +140,7 @@ Devices only need three calls, all available over REST and gRPC:
 For maximal throughput use gRPC (`proto/license.proto`); the audit measured
 the HTTP framework itself at 178k RPS, so either transport is far from the
 bottleneck — the per-request DB round trips are (see
-[the audit](security-audit.md#part-2--performance-findings)).
+[the audit](security-audit.md#part-2-performance-findings)).
 
 ## Publishing
 

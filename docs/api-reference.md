@@ -62,6 +62,45 @@ instead of double-issuing.
 
 ---
 
+## Authentication (self-service signup/login)
+
+Email + password accounts for the admin console and API. Passwords are
+hashed with argon2id; the hash is never returned. Both endpoints are
+IP-rate-limited. Login failures are a generic 401 (no email enumeration).
+
+### `POST /v1/auth/signup` — create a user + their own org 🔓
+
+Self-service tenant bootstrap: creates the **user**, their **account**
+(slug derived from the email, unique), an Owner membership, and a personal
+(admin-capable) bearer token — so an individual can immediately manage
+products, policies and licenses.
+
+```json
+// request
+{ "email": "founder@startup.io", "password": "min-8-chars",
+  "full_name": "Founder", "org_name": "Startup Inc" }   // name/org optional
+// response data
+{ "user": { "id": "…", "email": "founder@startup.io", "status": "active", … },
+  "account": { "id": "019f…", "slug": "founder", "name": "Startup Inc", … },
+  "token": "pat_…" }   // plaintext, shown ONCE
+```
+
+Errors: `409` email already registered · `400` invalid email / short password.
+
+### `POST /v1/auth/login` — sign in 🔓
+
+Verifies the password and mints a fresh personal token for the user's
+organization (their first membership). `401` invalid credentials · `403`
+suspended user.
+
+```json
+// request
+{ "email": "founder@startup.io", "password": "…" }
+// response data — same shape as signup
+```
+
+---
+
 ## Accounts (organizations)
 
 ### `POST /v1/accounts` — bootstrap an org 🔓
@@ -184,7 +223,7 @@ on 4xx. See the [webhooks guide](webhooks.md).
 
 ## gRPC API (`licensev1.LicenseService`)
 
-Proto: [`proto/license.proto`](../proto/license.proto) · Default port 9090.
+Proto: [`proto/license.proto`](https://github.com/mahavirvataliya/license-server-rust/blob/main/proto/license.proto) · Default port 9090.
 
 | RPC | Request → Response | Notes |
 |---|---|---|
