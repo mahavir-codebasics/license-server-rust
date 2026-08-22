@@ -94,7 +94,10 @@ mod tests {
         assert_eq!(parse_origin_csv(""), Vec::<String>::new());
         assert_eq!(
             parse_origin_csv(" https://Admin.Example.com ,,https://b.dev"),
-            vec!["https://admin.example.com".to_string(), "https://b.dev".to_string()]
+            vec![
+                "https://admin.example.com".to_string(),
+                "https://b.dev".to_string()
+            ]
         );
     }
 }
