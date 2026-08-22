@@ -1,0 +1,25 @@
+name: Feature request
+description: Propose an enhancement for license-server-rust
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what's blocking you today?
+    validations:
+      required: true
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: Who needs this and in what scenario? Concrete examples help.
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-shape
+    attributes:
+      label: Proposed shape
+      description: How would you expect it to work? API shape, config, CLI flag, UI surface — sketch it.
+    validations:
+      required: false
