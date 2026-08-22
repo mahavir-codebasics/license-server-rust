@@ -8,25 +8,20 @@
 //! When Redis is absent, the layer is a no-op (mutations just aren't
 //! idempotent-safe — acceptable for local dev).
 
-use redis::Commands;
-use std::sync::Arc;
+use redis::{aio::ConnectionManager, AsyncCommands};
 use std::time::Duration;
 
 const TTL: Duration = Duration::from_secs(24 * 3600);
 
 /// Has this (account, key) been seen before? Returns the cached response body
 /// + status if so. No-op (None) when Redis isn't configured.
-pub fn get_cached(
-    redis: Option<&Arc<redis::Client>>,
+pub async fn get_cached(
+    redis: Option<&ConnectionManager>,
     account_id: &str,
     key: &str,
 ) -> Option<(u16, String)> {
-    let client = redis?;
-    let Ok(mut conn) = client.get_connection() else {
-        return None;
-    };
-    let redis_key = redis_key(account_id, key);
-    let val: Option<String> = conn.get(&redis_key).ok();
+    let mut conn = redis?.clone();
+    let val: Option<String> = conn.get(redis_key(account_id, key)).await.ok()?;
     val.and_then(|s| {
         // Format: "<status>\n<body>"
         let (status, body) = s.split_once('\n')?;
@@ -35,24 +30,23 @@ pub fn get_cached(
 }
 
 /// Store a response for future replays. No-op when Redis isn't configured.
-pub fn store(
-    redis: Option<&Arc<redis::Client>>,
+pub async fn store(
+    redis: Option<&ConnectionManager>,
     account_id: &str,
     key: &str,
     status: u16,
     body: &str,
 ) {
-    let Some(client) = redis else {
+    let Some(mut conn) = redis.cloned() else {
         return;
     };
-    let Ok(mut conn) = client.get_connection() else {
-        return;
-    };
-    let redis_key = redis_key(account_id, key);
-    let payload = format!("{status}\n{body}");
-    let _: () = conn
-        .set_ex(&redis_key, payload, TTL.as_secs())
-        .unwrap_or(());
+    let _: Result<(), _> = conn
+        .set_ex(
+            redis_key(account_id, key),
+            format!("{status}\n{body}"),
+            TTL.as_secs(),
+        )
+        .await;
 }
 
 /// Is the presented key well-formed? (non-empty, reasonable length)
@@ -75,14 +69,13 @@ mod tests {
         assert!(!is_well_formed(&"x".repeat(300)));
     }
 
-    #[test]
-    fn get_cached_returns_none_without_redis() {
-        assert!(get_cached(None, "acc", "key").is_none());
+    #[tokio::test]
+    async fn get_cached_returns_none_without_redis() {
+        assert!(get_cached(None, "acc", "key").await.is_none());
     }
 
-    #[test]
-    fn store_is_noop_without_redis() {
-        // Just shouldn't panic.
-        store(None, "acc", "key", 200, "{}");
+    #[tokio::test]
+    async fn store_is_noop_without_redis() {
+        store(None, "acc", "key", 200, "{}").await;
     }
 }

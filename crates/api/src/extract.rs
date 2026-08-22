@@ -2,6 +2,7 @@
 
 use axum::extract::Query;
 use license_domain::repository::{PageQuery, Repository};
+use redis::aio::ConnectionManager;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -18,8 +19,8 @@ pub struct AppState {
     /// Master secret used for AES-key derivation + token hashing.
     /// (In production this comes from the KMS-backed KeyStore.)
     pub master_secret: Arc<[u8; 32]>,
-    /// Optional Redis client for rate limiting + idempotency.
-    pub redis: Option<Arc<redis::Client>>,
+    /// Multiplexed async Redis connection (rate limiting + idempotency).
+    pub redis: Option<ConnectionManager>,
 }
 
 impl AppState {
@@ -31,8 +32,8 @@ impl AppState {
         }
     }
 
-    pub fn with_redis(mut self, redis: redis::Client) -> Self {
-        self.redis = Some(Arc::new(redis));
+    pub fn with_redis(mut self, redis: ConnectionManager) -> Self {
+        self.redis = Some(redis);
         self
     }
 }

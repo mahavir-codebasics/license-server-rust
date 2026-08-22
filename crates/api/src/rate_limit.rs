@@ -15,8 +15,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use redis::Commands;
-use std::sync::Arc;
+use redis::{aio::ConnectionManager, AsyncCommands};
 
 use crate::auth::AuthPrincipal;
 use crate::extract::AppState;
@@ -53,24 +52,27 @@ pub fn limit_for(method: &str, path: &str) -> Limit {
 
 /// Apply the rate limit. Returns Ok(()) if allowed; Err(retry_after_secs) if
 /// the bucket is empty. No-op (Ok) when Redis isn't configured.
-pub fn check(
-    redis: Option<&Arc<redis::Client>>,
+pub async fn check(
+    redis: Option<&ConnectionManager>,
     account_key: &str,
     class: &str,
     limit: Limit,
 ) -> Result<(), u64> {
-    let Some(client) = redis else {
-        return Ok(());
-    };
-    let Ok(mut conn) = client.get_connection() else {
-        // Redis down: fail OPEN (don't break the API for a limiter fault).
+    let Some(mut conn) = redis.cloned() else {
         return Ok(());
     };
     let key = format!("ratelimit:{account_key}:{class}");
-    let count: i64 = conn.incr(&key, 1).map_err(|_| 0u64)?;
-    // On the first increment of a window, set the TTL so the bucket resets.
+    let count: Option<i64> = conn.incr(&key, 1u64).await.ok();
+    let Some(count) = count else {
+        // Redis fault: fail OPEN (don't break the API for a limiter fault).
+        return Ok(());
+    };
     if count == 1 {
-        let _: () = conn.expire(&key, limit.refill_secs as i64).unwrap_or(());
+        let _: Result<(), _> = redis::pipe()
+            .atomic()
+            .expire(&key, limit.refill_secs as i64)
+            .query_async(&mut conn)
+            .await;
     }
     if count as u32 > limit.capacity {
         // Bucket exhausted — return the window length as retry-after.
@@ -103,7 +105,7 @@ pub async fn middleware(State(state): State<AppState>, req: Request, next: Next)
         .unwrap_or_else(|| "anon".to_string());
 
     let class = format!("{}:{}", method, path_to_class(&path));
-    if let Err(retry_after) = check(state.redis.as_ref(), &bucket_key, &class, limit) {
+    if let Err(retry_after) = check(state.redis.as_ref(), &bucket_key, &class, limit).await {
         return too_many(retry_after);
     }
     next.run(req).await
@@ -163,10 +165,10 @@ mod tests {
         assert!(r.capacity > m.capacity);
     }
 
-    #[test]
-    fn check_passes_without_redis() {
-        // No Redis client -> always allowed (graceful degradation).
-        assert!(check(None, "acc", "class", Limit::new(1, 1)).is_ok());
+    #[tokio::test]
+    async fn check_passes_without_redis() {
+        // No Redis manager -> always allowed (graceful degradation).
+        assert!(check(None, "acc", "class", Limit::new(1, 1)).await.is_ok());
     }
 
     #[test]

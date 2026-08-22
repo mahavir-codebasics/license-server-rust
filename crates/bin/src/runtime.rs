@@ -16,13 +16,15 @@ use axum::{
 use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::Arc;
+
+use redis::aio::ConnectionManager;
 use tokio::signal;
 use tracing::{error, info};
 
 /// Entry for the `api` role: HTTP REST + the gRPC hot-path server, concurrently.
 pub async fn run_api(cfg: &Config) -> Result<()> {
     let repo = build_repo(cfg).await?;
-    let state = build_state(cfg, repo.clone())?;
+    let state = build_state(cfg, repo.clone()).await?;
     let master_secret = state.master_secret.clone();
     let app = license_api::router(state).merge(
         Router::new()
@@ -111,7 +113,7 @@ pub async fn run_all(cfg: &Config) -> Result<()> {
     preflight(cfg).await?;
 
     let repo = build_repo(cfg).await?;
-    let state = build_state(cfg, repo.clone())?;
+    let state = build_state(cfg, repo.clone()).await?;
 
     // API task.
     let api_router = license_api::router(state);
@@ -172,7 +174,7 @@ async fn build_repo(cfg: &Config) -> Result<Arc<dyn license_domain::repository::
 /// Build the AppState from config: DB repo + decoded master secret + optional
 /// Redis client (for rate limiting + idempotency). Redis is best-effort — if
 /// it's unreachable, the API still works (rate limiting + idempotency no-op).
-fn build_state(
+async fn build_state(
     cfg: &Config,
     repo: Arc<dyn license_domain::repository::Repository>,
 ) -> Result<license_api::extract::AppState> {
@@ -181,12 +183,17 @@ fn build_state(
     let mut state = license_api::extract::AppState::new(repo, master_secret);
     if !cfg.redis.url.is_empty() {
         match redis::Client::open(cfg.redis.url.as_str()) {
-            Ok(client) => {
-                state = state.with_redis(client);
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "redis client init failed; rate limiting/idempotency disabled");
-            }
+            Ok(client) => match ConnectionManager::new(client).await {
+                Ok(mgr) => state = state.with_redis(mgr),
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "redis unreachable; rate limiting/idempotency disabled"
+                ),
+            },
+            Err(e) => tracing::warn!(
+                error = %e,
+                "redis url invalid; rate limiting/idempotency disabled"
+            ),
         }
     }
     Ok(state)
@@ -203,7 +210,7 @@ async fn build_app(cfg: &Config) -> Result<Router> {
     let repo = pool.into_repository();
 
     // Decode the master key + build the AppState (repo + master secret + Redis).
-    let state = build_state(cfg, repo)?;
+    let state = build_state(cfg, repo).await?;
 
     let api = license_api::router(state);
     Ok(Router::new()

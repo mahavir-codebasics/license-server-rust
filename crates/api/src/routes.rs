@@ -421,7 +421,7 @@ async fn create_license(
         .map(|s| s.to_string());
     if let Some(key) = idem_key.as_deref() {
         if let Some((status, body)) =
-            crate::idempotency::get_cached(state.redis.as_ref(), &aid.to_string(), key)
+            crate::idempotency::get_cached(state.redis.as_ref(), &aid.to_string(), key).await
         {
             return Ok(cached_response_raw(status, &body));
         }
@@ -477,7 +477,8 @@ async fn create_license(
     // Cache the response for idempotent retries (best-effort).
     let body_str = serde_json::to_string(&resp).unwrap_or_default();
     if let Some(key) = idem_key.as_deref() {
-        crate::idempotency::store(state.redis.as_ref(), &aid.to_string(), key, 200, &body_str);
+        crate::idempotency::store(state.redis.as_ref(), &aid.to_string(), key, 200, &body_str)
+            .await;
     }
 
     Ok(axum::response::IntoResponse::into_response(resp))
