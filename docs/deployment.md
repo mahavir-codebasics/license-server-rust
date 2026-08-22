@@ -17,7 +17,7 @@ Set via `LICENSE_SERVER__ROLE` or `--role`. All roles need the same `DATABASE_UR
 ## Configuration
 
 All config via `LICENSE_SERVER__*` env (double-underscore nesting) or
-`config.toml`. See [`.env.example`](../.env.example) for the full list.
+`config.toml`. See [`.env.example`](https://github.com/mahavirvataliya/license-server-rust/blob/main/.env.example) for the full list.
 
 **Production-critical settings:**
 
@@ -99,10 +99,57 @@ run as non-root.
 
 - **Devices:** device-facing traffic goes over gRPC; the hot path is
   `Validate`/`ValidateKey`. Read [the audit's performance
-  section](security-audit.md#part-2--performance-findings) before sizing —
+  section](security-audit.md#part-2-performance-findings) before sizing —
   the per-request DB round trips (not the framework) set the ceiling, and the
   recommended token cache multiplies capacity cheaply.
 - **Read scaling:** a `replica_url` config field exists; wiring is tracked as
   PERF-005.
 - **Multi-region:** run `api`/`worker` per region against regional DBs;
   licenses are account-scoped so partitioning by account works today.
+
+## Reference single-server deployment (this repo's `deploy/`)
+
+`deploy/` contains the toolchain used for the reference instance on an OCI
+ARM box (rootless Docker, Tailscale-only networking):
+
+- **`deploy.sh`** — end-to-end: builds nothing itself, but rsyncs the bundle,
+  generates `.env` secrets once (kept across redeploys), ships prebuilt
+  images via `docker save | ssh docker load`, and brings the stack up.
+- **`build-site.mjs`** — renders `docs/*.md` + a landing page into the
+  static site served at `/` (re-run after doc edits, then re-deploy).
+- **`docker-compose.prod.yml` + `nginx.conf`** — nginx on :80 fronts
+  everything: `/` static site, `/v1` + `/healthz` → the API, `/admin` → the
+  Next.js console (built with `basePath=/admin` and a same-origin relative
+  API base). gRPC :9090 is published directly.
+
+Layout on the host:
+
+```
+~/license-server/
+├── .env                  # POSTGRES_PASSWORD, MASTER_KEY (0600, generated once)
+├── docker-compose.prod.yml
+├── nginx.conf
+└── site/                 # landing + rendered docs
+```
+
+Redeploy after code changes: rebuild both images (linux/arm64), then
+`./deploy/deploy.sh ubuntu@<host>`. Notes for rootless Docker hosts: low
+ports need `net.ipv4.ip_unprivileged_port_start=80` in `/etc/sysctl.conf`,
+and `loginctl enable-linger <user>` so the daemon starts at boot.
+
+### Public hostname via Cloudflare Tunnel
+
+The reference instance is published at **https://license.itih.in** through a
+locally-managed Cloudflare Tunnel (coexists with any token-based tunnels on
+the same host):
+
+- Tunnel `license-server` (`~/.cloudflared/config.yml`, credentials in
+  `~/.cloudflared/`), ingress `license.itih.in → http://localhost:80` (nginx).
+- Runs as its own systemd unit `cloudflared-license.service` (restart=always),
+  separate from the stock `cloudflared.service`.
+- DNS is a CNAME to `<tunnel-id>.cfargotunnel.com`, created with
+  `cloudflared tunnel route dns license-server license.itih.in`.
+- TLS terminates at Cloudflare's edge; the origin is plain HTTP on localhost.
+  Raw TCP gRPC (:9090) is not proxied through the tunnel — point SDKs at the
+  tailnet address for the hot path, or front gRPC with an HTTP/2-capable
+  origin later.
