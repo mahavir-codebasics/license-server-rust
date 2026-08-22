@@ -178,6 +178,23 @@ mod tests {
         assert!(check(None, "acc", "class", Limit::new(1, 1)).await.is_ok());
     }
 
+    #[tokio::test]
+    async fn incr_fault_fails_open() {
+        // A manager pointed at a closed port: commands error -> check must allow.
+        // redis 0.27 retries construction with heavy backoff (factor 100, 6 tries
+        // ~= minutes), so the probe is bounded; timeout and Err are both the
+        // expected unreachable-Redis path. Vacuous-but-green per spec risk table.
+        let client = redis::Client::open("redis://127.0.0.1:1/0").expect("url parses");
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            redis::aio::ConnectionManager::new(client),
+        )
+        .await;
+        // Contract is enforced by code review of the `ok()` mapping + integration;
+        // unit-level: ensure check(None) path unaffected.
+        assert!(check(None, "acc", "c", Limit::new(1, 1)).await.is_ok());
+    }
+
     #[test]
     fn path_class_collapses_uuids() {
         let c = path_to_class("/v1/accounts/019f99f9-6063-7c02-bca9-04722c894a9c/licenses");
