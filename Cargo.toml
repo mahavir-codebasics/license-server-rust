@@ -54,7 +54,7 @@ thiserror = "2"
 anyhow = "1"
 
 # IDs & time
-uuid = { version = "1.11", features = ["v7", "serde"] }
+uuid = { version = "1.11", features = ["v4", "v7", "serde"] }
 time = { version = "0.3", features = ["serde", "serde-human-readable"] }
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 

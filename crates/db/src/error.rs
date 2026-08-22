@@ -70,15 +70,18 @@ impl Pool {
     /// both PG and MySQL migrations are written to be idempotent on objects they
     /// own (`CREATE TABLE` will still fail on re-run — call this on a fresh DB,
     /// or use the per-backend migration tracker in a real deploy).
-    pub async fn connect(database_url: &str) -> Result<Self, DomainError> {
+    pub async fn connect(database_url: &str, max_connections: u32) -> Result<Self, DomainError> {
         let backend = crate::Backend::from_url(database_url)?;
+        let max = max_connections.max(1);
         match backend {
             crate::Backend::Sqlite => {
                 let opts = SqliteConnectOptions::from_str(database_url)
                     .map_err(map_err)?
-                    .create_if_missing(true);
+                    .create_if_missing(true)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .busy_timeout(std::time::Duration::from_secs(5));
                 let pool = SqlitePoolOptions::new()
-                    .max_connections(8)
+                    .max_connections(max)
                     .connect_with(opts)
                     .await
                     .map_err(map_err)?;
@@ -90,7 +93,7 @@ impl Pool {
             }
             crate::Backend::Postgres => {
                 let pool = PgPoolOptions::new()
-                    .max_connections(8)
+                    .max_connections(max)
                     .connect(database_url)
                     .await
                     .map_err(map_err)?;
@@ -102,7 +105,7 @@ impl Pool {
             }
             crate::Backend::Mysql => {
                 let pool = MySqlPoolOptions::new()
-                    .max_connections(8)
+                    .max_connections(max)
                     .connect(database_url)
                     .await
                     .map_err(map_err)?;
@@ -129,5 +132,33 @@ impl Pool {
             Pool::Postgres(p) => std::sync::Arc::new(crate::PostgresRepository::new(p)),
             Pool::Mysql(p) => std::sync::Arc::new(crate::MysqlRepository::new(p)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn sqlite_pool_honors_size_and_wal() {
+        // :memory: reports journal_mode "memory"; use a real file for the WAL check.
+        std::fs::create_dir_all("target").unwrap();
+        let db_url = "sqlite://target/test-wal-task6.db?mode=rwc";
+        let pool = Pool::connect(db_url, 3).await.expect("connect");
+        let Pool::Sqlite(ref p) = pool else {
+            panic!("sqlite expected")
+        };
+        assert_eq!(
+            p.options().get_max_connections(),
+            3,
+            "max_connections must be honored"
+        );
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(p.acquire().await.unwrap().as_mut())
+            .await
+            .unwrap();
+        assert_eq!(mode.to_lowercase(), "wal");
+        drop(pool);
+        std::fs::remove_file("target/test-wal-task6.db").ok();
     }
 }

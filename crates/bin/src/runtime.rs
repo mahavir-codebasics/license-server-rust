@@ -160,10 +160,12 @@ pub async fn run_all(cfg: &Config) -> Result<()> {
 /// Connect to the configured DB, run migrations, and return a backend-agnostic
 /// `Arc<dyn Repository>`. Shared by every role.
 async fn build_repo(cfg: &Config) -> Result<Arc<dyn license_domain::repository::Repository>> {
-    Ok(license_db::Pool::connect(&cfg.database.url)
-        .await
-        .context("connecting database")?
-        .into_repository())
+    Ok(
+        license_db::Pool::connect(&cfg.database.url, cfg.database.max_connections)
+            .await
+            .context("connecting database")?
+            .into_repository(),
+    )
 }
 
 /// Build the AppState from config: DB repo + decoded master secret + optional
@@ -201,7 +203,7 @@ async fn build_state(
 async fn build_app(cfg: &Config) -> Result<Router> {
     // Connect to the configured database + run migrations. The pool resolves
     // to the right backend (SQLite/Postgres/MySQL) from the URL scheme.
-    let pool = license_db::Pool::connect(&cfg.database.url)
+    let pool = license_db::Pool::connect(&cfg.database.url, cfg.database.max_connections)
         .await
         .context("connecting database")?;
     let repo = pool.into_repository();

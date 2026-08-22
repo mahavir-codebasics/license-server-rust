@@ -48,7 +48,7 @@ async fn fresh_repo() -> Option<MysqlRepository> {
         eprintln!("[mysql_isolation] skipped: no DATABASE_URL / LICENSE_TEST_MYSQL_URL");
         return None;
     };
-    match Pool::connect(&url).await {
+    match Pool::connect(&url, 8).await {
         Ok(p) => Some(MysqlRepository::from(p)),
         Err(e) => {
             eprintln!("[mysql_isolation] skipped: could not connect to MySQL ({url}): {e}");
