@@ -24,7 +24,7 @@ use tracing::{error, info};
 /// Entry for the `api` role: HTTP REST + the gRPC hot-path server, concurrently.
 pub async fn run_api(cfg: &Config) -> Result<()> {
     let repo = build_repo(cfg).await?;
-    let state = build_state(cfg, repo.clone()).await?;
+    let (state, redis_mgr) = build_state(cfg, repo.clone()).await?;
     let master_secret = state.master_secret.clone();
     let app = compose_http(license_api::router(state));
 
@@ -35,16 +35,16 @@ pub async fn run_api(cfg: &Config) -> Result<()> {
         .parse()
         .context("invalid grpc bind address")?;
 
-    // gRPC hot path (tonic). Shares the same master secret as the REST API.
+    // gRPC hot path (tonic). Shares the same master secret as the REST API and
+    // the same Redis handle for validate rate limiting (fail-open when absent).
     let grpc_svc = license_grpc::proto::license_service_server::LicenseServiceServer::new(
-        license_grpc::LicenseService::new(repo.clone(), master_secret),
+        license_grpc::LicenseService::new(repo.clone(), master_secret).with_limits(redis_mgr),
     );
-    // gRPC binds its own listener internally via .serve(addr).
     info!(addr = %grpc_addr, "grpc listening");
     let grpc_task = tokio::spawn(async move {
         tonic::transport::Server::builder()
             .add_service(grpc_svc)
-            .serve(grpc_addr)
+            .serve_with_shutdown(grpc_addr, shutdown_signal())
             .await
             .context("grpc server")
     });
@@ -112,7 +112,7 @@ pub async fn run_all(cfg: &Config) -> Result<()> {
     preflight(cfg).await?;
 
     let repo = build_repo(cfg).await?;
-    let state = build_state(cfg, repo.clone()).await?;
+    let (state, _redis_mgr) = build_state(cfg, repo.clone()).await?;
 
     // API task.
     let api_router = license_api::router(state);
@@ -171,19 +171,25 @@ async fn build_repo(cfg: &Config) -> Result<Arc<dyn license_domain::repository::
 /// Build the AppState from config: DB repo + decoded master secret + optional
 /// Redis client (for rate limiting + idempotency). Redis is best-effort — if
 /// it's unreachable, the API still works (rate limiting + idempotency no-op).
+/// Returns the state plus a clone of the manager so secondary consumers (gRPC)
+/// share the same multiplexed connection.
 async fn build_state(
     cfg: &Config,
     repo: Arc<dyn license_domain::repository::Repository>,
-) -> Result<license_api::extract::AppState> {
+) -> Result<(license_api::extract::AppState, Option<ConnectionManager>)> {
     let master_secret =
         decode_master_secret(&cfg.crypto.master_key).context("decoding master key")?;
     let mut state = license_api::extract::AppState::new(repo, master_secret);
     state = state.with_trusted_proxies(cfg.security.trusted_proxies);
     state.allowed_origins = license_api::extract::parse_origin_csv(&cfg.security.allowed_origins);
+    let mut redis_mgr: Option<ConnectionManager> = None;
     if !cfg.redis.url.is_empty() {
         match redis::Client::open(cfg.redis.url.as_str()) {
             Ok(client) => match ConnectionManager::new(client).await {
-                Ok(mgr) => state = state.with_redis(mgr),
+                Ok(mgr) => {
+                    redis_mgr = Some(mgr.clone());
+                    state = state.with_redis(mgr);
+                }
                 Err(e) => tracing::warn!(
                     error = %e,
                     "redis unreachable; rate limiting/idempotency disabled"
@@ -195,7 +201,7 @@ async fn build_state(
             ),
         }
     }
-    Ok(state)
+    Ok((state, redis_mgr))
 }
 
 /// Build the axum app: the v1 API router merged with health endpoints.
@@ -209,7 +215,7 @@ async fn build_app(cfg: &Config) -> Result<Router> {
     let repo = pool.into_repository();
 
     // Decode the master key + build the AppState (repo + master secret + Redis).
-    let state = build_state(cfg, repo).await?;
+    let (state, _redis_mgr) = build_state(cfg, repo).await?;
 
     let api = license_api::router(state);
     Ok(compose_http(api))
