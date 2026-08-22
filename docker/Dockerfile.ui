@@ -11,6 +11,7 @@ RUN corepack enable
 # optional native build scripts like sharp).
 ENV CI=true
 COPY ui/package.json ui/pnpm-lock.yaml ui/pnpm-workspace.yaml ./
+RUN ls -la /app && cat /app/pnpm-workspace.yaml && pnpm --version && pnpm config list
 RUN pnpm install --frozen-lockfile
 
 FROM node:${NODE_VERSION}-bookworm-slim AS builder
