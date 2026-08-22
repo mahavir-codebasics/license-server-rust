@@ -79,7 +79,7 @@ jobs:
             db_url: mysql://license:license@localhost:3306/license
           - backend: sqlite
             test_file: isolation
-            db_url: sqlite::memory:
+            db_url: "sqlite::memory:"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
