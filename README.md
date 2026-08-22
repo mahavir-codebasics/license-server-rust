@@ -24,6 +24,21 @@ gRPC hot path and write our own SDKs.
 
 [keygen-sh/keygen-api]: https://github.com/keygen-sh/keygen-api
 
+## Screenshots
+
+Next.js 15 admin UI — login, org-scoped dashboard, and resource management:
+
+| Dashboard | Licenses |
+|---|---|
+| ![Admin dashboard](docs/screenshots/dashboard.png) | ![Licenses](docs/screenshots/licenses.png) |
+| ![Products](docs/screenshots/products.png) | ![API tokens](docs/screenshots/tokens.png) |
+
+More: [login](docs/screenshots/login.png) ·
+[policies](docs/screenshots/policies.png) ·
+[machines](docs/screenshots/machines.png) ·
+[webhooks](docs/screenshots/webhooks.png) ·
+[event log](docs/screenshots/events.png)
+
 ## What's here now
 
 - **`crates/domain`** — pure entities + business rules. No I/O. The license
