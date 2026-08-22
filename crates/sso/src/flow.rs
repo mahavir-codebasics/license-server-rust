@@ -11,22 +11,102 @@
 //!     token endpoint and fetches the userinfo, returning a normalized
 //!     [`OidcUserInfo`].
 //!
-//! The HTTP transport is `reqwest` via `openidconnect`'s built-in async client.
-//! All network errors are mapped to [`crate::SsoError`].
+//! All HTTP traffic goes through [`http_client`] (a process-wide `reqwest`
+//! client with a hard 15s timeout) and provider discovery results are cached
+//! per issuer for [`DISCOVERY_TTL`]. All network errors are mapped to
+//! [`crate::SsoError`].
+
+use std::collections::HashMap;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use openidconnect::core::{
     CoreAuthenticationFlow, CoreClient, CoreProviderMetadata, CoreUserInfoClaims,
 };
-use openidconnect::reqwest::async_http_client;
 use openidconnect::{
-    AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce, OAuth2TokenResponse,
-    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
+    AuthorizationCode, ClientId, ClientSecret, CsrfToken, HttpRequest, HttpResponse, IssuerUrl,
+    Nonce, OAuth2TokenResponse, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 use url::Url;
 
 use crate::config::SsoConfig;
 use crate::error::{Result, SsoError};
+
+/// Hard timeout applied to every OIDC HTTP request (discovery, token
+/// exchange, userinfo). Without it a hung IdP stalls the request handler
+/// indefinitely.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long a discovery document may be reused before re-fetching.
+const DISCOVERY_TTL: Duration = Duration::from_secs(600);
+
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+/// Process-wide `reqwest` client used for all OIDC traffic.
+///
+/// A single shared client (with connection pooling) carrying an explicit
+/// timeout; built lazily exactly once.
+pub fn http_client() -> &'static reqwest::Client {
+    HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(HTTP_TIMEOUT)
+            // Matches oauth2's built-in clients: following redirects could leak
+            // auth headers to a redirect target.
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("static reqwest client configuration is valid")
+    })
+}
+
+/// Concrete error for [`timed_http`]: oauth2's async-client bound requires a
+/// sized `Error + 'static`, which `Box<dyn Error>` is not.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+struct HttpError(#[from] Box<dyn std::error::Error + Send + Sync>);
+
+fn http_err<E>(err: E) -> HttpError
+where
+    E: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    HttpError(err.into())
+}
+
+/// Adapter bridging `openidconnect`'s async-HTTP-client bound (`Fn(HttpRequest)
+/// -> Future<Output = Result<HttpResponse, RE>>`, `RE: Error + 'static`) onto
+/// the shared timed [`http_client`].
+///
+/// Request/response types are converted field-by-field because
+/// `openidconnect` links `http` 0.2 while `reqwest` 0.12 links `http` 1.x.
+async fn timed_http(request: HttpRequest) -> std::result::Result<HttpResponse, HttpError> {
+    let method =
+        reqwest::Method::from_bytes(request.method.as_str().as_bytes()).map_err(http_err)?;
+    let mut builder = http_client()
+        .request(method, request.url)
+        .body(request.body);
+    for (name, value) in &request.headers {
+        builder = builder.header(name.as_str(), value.as_bytes());
+    }
+
+    let response = builder.send().await.map_err(http_err)?;
+    let status_code = <openidconnect::http::StatusCode>::from_u16(response.status().as_u16())
+        .map_err(http_err)?;
+    let mut headers = openidconnect::http::HeaderMap::with_capacity(response.headers().len());
+    for (name, value) in response.headers() {
+        headers.insert(
+            openidconnect::http::HeaderName::from_bytes(name.as_str().as_bytes())
+                .map_err(http_err)?,
+            openidconnect::http::HeaderValue::from_bytes(value.as_bytes()).map_err(http_err)?,
+        );
+    }
+    let body = response.bytes().await.map_err(http_err)?.to_vec();
+    Ok(HttpResponse {
+        status_code,
+        headers,
+        body,
+    })
+}
 
 /// Normalized user identity extracted from the IdP's userinfo response.
 ///
@@ -152,7 +232,7 @@ pub async fn exchange(
     let token_response = client
         .exchange_code(AuthorizationCode::new(code))
         .set_pkce_verifier(pkce_verifier)
-        .request_async(async_http_client)
+        .request_async(timed_http)
         .await?;
 
     // 2) Fetch userinfo using the access token. We do not constrain the
@@ -160,19 +240,44 @@ pub async fn exchange(
     //    authoritative for our normalization purposes.
     let user_info: CoreUserInfoClaims = client
         .user_info(token_response.access_token().clone(), None)?
-        .request_async(async_http_client)
+        .request_async(timed_http)
         .await?;
 
     OidcUserInfo::from_claims(&user_info)
 }
 
+/// Process-wide discovery-document cache keyed by issuer URL.
+static PROVIDER_METADATA_CACHE: OnceLock<Mutex<HashMap<String, (CoreProviderMetadata, Instant)>>> =
+    OnceLock::new();
+
+/// Fetch (or reuse a cached copy of) the OIDC discovery document for
+/// `issuer_url`.
+///
+/// Discovery hits the network on every `begin`/`exchange`; caching for
+/// [`DISCOVERY_TTL`] removes that round-trip without weakening freshness much.
+async fn provider_metadata(issuer_url: &str) -> Result<CoreProviderMetadata> {
+    let cache = PROVIDER_METADATA_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+    if let Some((metadata, cached_at)) = cache.lock().await.get(issuer_url) {
+        if cached_at.elapsed() < DISCOVERY_TTL {
+            return Ok(metadata.clone());
+        }
+    }
+
+    let metadata =
+        CoreProviderMetadata::discover_async(IssuerUrl::new(issuer_url.to_string())?, timed_http)
+            .await?;
+    cache
+        .lock()
+        .await
+        .insert(issuer_url.to_string(), (metadata.clone(), Instant::now()));
+    Ok(metadata)
+}
+
 /// Build and configure a `CoreClient` from an [`SsoConfig`].
 ///
-/// Performs OIDC discovery (`GET {issuer}/.well-known/openid-configuration`)
-/// so the client knows the authorization, token, userinfo, and JWKS endpoints.
-/// This is the only network call in `build_client`; it is invoked once per
-/// `begin` and once per `exchange`. A future optimization may cache the
-/// discovered metadata per (issuer, client_id) pair.
+/// Discovery goes through [`provider_metadata`] so repeated flows reuse the
+/// cached document.
 async fn build_client(config: &SsoConfig) -> Result<CoreClient> {
     if config.issuer_url.trim().is_empty() {
         return Err(SsoError::config("issuer_url is required"));
@@ -184,7 +289,6 @@ async fn build_client(config: &SsoConfig) -> Result<CoreClient> {
         return Err(SsoError::config("redirect_url is required"));
     }
 
-    let issuer = IssuerUrl::new(config.issuer_url.clone())?;
     let client_id = ClientId::new(config.client_id.clone());
     let client_secret = config
         .client_secret
@@ -193,10 +297,7 @@ async fn build_client(config: &SsoConfig) -> Result<CoreClient> {
         .map(|s| ClientSecret::new(s.clone()));
     let redirect_url = RedirectUrl::new(config.redirect_url.clone())?;
 
-    let provider_metadata = CoreProviderMetadata::discover_async(issuer, async_http_client)
-        // We cannot `?` here because the discovery error is generic over
-        // the reqwest error type; the `From` impl in `error.rs` handles it.
-        .await?;
+    let provider_metadata = provider_metadata(&config.issuer_url).await?;
 
     let client = CoreClient::from_provider_metadata(provider_metadata, client_id, client_secret)
         .set_redirect_uri(redirect_url);
@@ -291,5 +392,17 @@ mod tests {
         // would surface as a compile error here).
         fn _accepts<C: AdditionalClaims>() {}
         _accepts::<openidconnect::EmptyAdditionalClaims>();
+    }
+
+    #[test]
+    fn http_client_timeout_is_15s() {
+        // reqwest 0.12 exposes no timeout getter on Client/ClientBuilder, so
+        // assert the single source of truth the shared client is built from.
+        assert_eq!(HTTP_TIMEOUT, std::time::Duration::from_secs(15));
+    }
+
+    #[test]
+    fn http_client_is_memoized() {
+        assert!(std::ptr::eq(http_client(), http_client()));
     }
 }
