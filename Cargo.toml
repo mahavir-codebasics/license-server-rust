@@ -65,7 +65,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # Web framework (REST)
 axum = { version = "0.7", features = ["macros"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip", "request-id"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip", "request-id", "catch-panic"] }
 hyper = "1"
 
 # gRPC

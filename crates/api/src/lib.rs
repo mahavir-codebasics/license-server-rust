@@ -21,4 +21,4 @@ pub mod routes;
 
 pub use error::{ApiError, ApiResult};
 pub use response::{Envelope, EnvelopePage, ErrorObject, Meta};
-pub use routes::router;
+pub use routes::{router, with_telemetry};

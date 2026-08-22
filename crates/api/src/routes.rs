@@ -32,7 +32,7 @@ use tower_http::cors::{Any, CorsLayer};
 /// on every request (soft-fail: missing/invalid token → anonymous).
 pub fn router(state: AppState) -> Router {
     let cors = build_cors(&state);
-    Router::new()
+    let app = Router::new()
         .route("/", get(root))
         // — Accounts (orgs) —
         .route("/v1/accounts", post(create_account).get(list_accounts))
@@ -103,7 +103,31 @@ pub fn router(state: AppState) -> Router {
             crate::rate_limit::middleware,
         ))
         .with_state(state)
-        .layer(cors)
+        .layer(cors);
+    with_telemetry(app)
+}
+
+/// The telemetry stack: panic → JSON envelope, per-request tracing spans,
+/// `x-request-id` generation + propagation. Tuple order = outermost-first:
+/// CatchPanic wraps everything, and Set must sit outside Propagate or the id
+/// is generated downstream of Propagate's snapshot and never reaches the
+/// response. Apply AFTER merging any external routes — `Router::layer` only
+/// wraps routes registered before it.
+pub fn with_telemetry(router: Router) -> Router {
+    router.layer((
+        tower_http::catch_panic::CatchPanicLayer::custom(panic_envelope),
+        tower_http::trace::TraceLayer::new_for_http(),
+        tower_http::request_id::SetRequestIdLayer::x_request_id(
+            tower_http::request_id::MakeRequestUuid,
+        ),
+        tower_http::request_id::PropagateRequestIdLayer::x_request_id(),
+    ))
+}
+
+/// Panic hook → standard JSON error envelope instead of a reset socket.
+fn panic_envelope(_panic: Box<dyn std::any::Any + Send>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    crate::error::ApiError::internal("internal server error").into_response()
 }
 
 // ── CORS ──────────────────────────────────────────────────────────────
