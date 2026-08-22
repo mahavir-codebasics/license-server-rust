@@ -1,0 +1,13 @@
+target/
+.git/
+.github/
+node_modules/
+ui/node_modules/
+ui/.next/
+.superpowers/
+.mimosa/
+.zcode/
+.codegraph
+docs/superpowers/
+deploy/site/
+*.log
