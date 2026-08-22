@@ -6,17 +6,17 @@ ARG NODE_VERSION=22
 
 FROM node:${NODE_VERSION}-bookworm-slim AS deps
 WORKDIR /app
-RUN corepack enable
-# CI=true lets pnpm run non-interactively (no TTY prompts, allowed to skip
-# optional native build scripts like sharp).
+# corepack prepare pins pnpm: refreshed node base images ignore the
+# packageManager field and resolve latest pnpm, whose ignored-builds policy
+# fails the install outright.
+RUN corepack enable && corepack prepare pnpm@10.18.0 --activate
 ENV CI=true
 COPY ui/package.json ui/pnpm-lock.yaml ui/pnpm-workspace.yaml ./
-RUN ls -la /app && cat /app/pnpm-workspace.yaml && pnpm --version && pnpm config list
 RUN pnpm install --frozen-lockfile
 
 FROM node:${NODE_VERSION}-bookworm-slim AS builder
 WORKDIR /app
-RUN corepack enable
+RUN corepack enable && corepack prepare pnpm@10.18.0 --activate
 COPY --from=deps /app/node_modules ./node_modules
 COPY ui/ .
 # Build with the API base URL baked in via build arg. Default points at the
