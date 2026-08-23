@@ -46,4 +46,9 @@ pub mod migrations {
             crate::Backend::Sqlite => SQLITE,
         }
     }
+
+    /// Version key of the current bundle. `Pool::connect` records it in a
+    /// `_migrations` tracker table and runs the SQL only when it hasn't been
+    /// applied yet, so boots against an existing database are safe (OPS-001).
+    pub const VERSION: &str = "20260725000001_initial";
 }
