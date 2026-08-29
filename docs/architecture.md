@@ -1,3 +1,7 @@
+---
+description: Architecture of license-server-rust: crate layering, license state machine, multi-database tenancy with Postgres Row-Level Security, crypto subsystem, jobs, and scale profile.
+---
+
 # Architecture
 
 A performance-first, multi-tenant licensing server in Rust: one modular

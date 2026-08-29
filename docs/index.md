@@ -1,10 +1,19 @@
 ---
+title: license-server-rust
+description: Self-hostable software licensing & distribution server in Rust — Ed25519/ECDSA/RSA/JWT signed licenses, REST + gRPC, SQLite/Postgres/MySQL, admin UI, official SDKs.
+image: screenshots/dashboard.png
 hide:
   - toc
   - navigation
 ---
 
+<div align="center" markdown>
+
+<img src="assets/logo-badge.svg" alt="license-server-rust logo" width="88" style="border-radius: 20%;">
+
 # license-server-rust
+
+</div>
 
 A performance-first, multi-tenant **software-licensing & distribution server**
 written in Rust — a self-hostable alternative to [keygen-sh].

@@ -1,3 +1,7 @@
+---
+description: HMAC-SHA256 signed webhooks in license-server-rust — payload format, signature verification in TypeScript and Rust, retries, and expected response codes.
+---
+
 # Webhooks Guide
 
 license-server delivers account events to your HTTPS endpoints, signed with
@@ -13,6 +17,17 @@ curl -X POST http://localhost:8080/v1/accounts/$ACCOUNT_ID/webhooks/endpoints \
 
 Response includes the **signing secret exactly once** — store it. (Empty
 `event_types` subscribes to everything.)
+
+### URL policy (SSRF guard)
+
+Endpoint URLs must be `http`/`https` pointing at a **public** host. The guard
+blocks — at registration and again before every delivery attempt — loopback,
+private (RFC 1918), link-local (including the cloud-metadata endpoint
+`169.254.169.254`), CGNAT, and reserved ranges, plus `localhost` names.
+Redirects are not followed, so a public URL can't hop to a private target.
+Deployments whose receivers live on the internal network can set
+`LICENSE_SERVER__SECURITY__WEBHOOKS_ALLOW_PRIVATE=true` to opt out (do not do
+this on machines that can reach a cloud-metadata service).
 
 ## Delivery request
 

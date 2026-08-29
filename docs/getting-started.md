@@ -1,3 +1,7 @@
+---
+description: Install license-server-rust and issue your first signed license in five minutes — bootstrap an org, create a product and policy, then validate over REST.
+---
+
 # Getting Started
 
 Get a licensing server running in under five minutes, then issue and validate your first license.

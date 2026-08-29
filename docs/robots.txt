@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://mahavirvataliya.github.io/license-server-rust/sitemap.xml
