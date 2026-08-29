@@ -25,6 +25,9 @@ RUN cargo install cargo-chef --locked --version ^0.1 || true
 COPY --from=chef /usr/src/license-server/recipe.json recipe.json
 # Build dependencies first (this layer is cached unless Cargo.toml changes).
 RUN cargo chef cook --release --recipe-path recipe.json
+# protoc is required by prost/tonic build scripts in crates/grpc.
+RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
 COPY . .
 # Build the actual binary.
 RUN cargo build --release --bin license-server

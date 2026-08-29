@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { cn, short } from "@/lib/utils";
-import { getAccountId, getToken, setAccountId, setToken } from "@/lib/api";
+import { getAccountId, getToken, getUser, setAccountId, setToken, setUser } from "@/lib/api";
 import { ShieldCheck, Boxes, FileText, Key, Cpu, Webhook, ScrollText, LayoutDashboard, LogOut, ChevronDown } from "lucide-react";
 
 const NAV = [
@@ -40,8 +40,10 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const logout = () => {
     setToken(null);
     setAccountId(null);
+    setUser(null);
     router.replace("/login");
   };
+  const user = getUser();
 
   const active = (href: string) =>
     pathname === `/app/${aid}/${href}` || pathname?.startsWith(`/app/${aid}/${href}/`);
@@ -52,15 +54,18 @@ export function Shell({ children }: { children: React.ReactNode }) {
       <aside className="w-60 shrink-0 border-r border-border bg-white flex flex-col">
         <div className="px-4 py-5 border-b border-border">
           <div className="flex items-center gap-2">
-            <div className="h-7 w-7 rounded-md bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
-              LS
-            </div>
+            <img src="/logo.svg" alt="license-server logo" className="h-7 w-7" />
             <span className="font-semibold">license-server</span>
           </div>
           <div className="mt-3 flex items-center gap-1 text-xs text-muted-foreground">
             <span>org:</span>
             <code className="font-mono">{short(aid, 10)}</code>
           </div>
+          {user && (
+            <div className="mt-1 truncate text-xs text-muted-foreground" title={user.email}>
+              {user.full_name || user.email}
+            </div>
+          )}
         </div>
         <nav className="flex-1 p-2 space-y-0.5">
           {NAV.map(({ href, label, icon: Icon }) => (

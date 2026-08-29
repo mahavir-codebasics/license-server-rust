@@ -2,8 +2,10 @@
 // Token is stored in localStorage (set at login). All tenant-scoped calls
 // go to /v1/accounts/{accountId}/...
 
+// Empty base = same-origin relative ("/v1/..."), which works behind the
+// reverse proxy that fronts both the UI and the API under one origin.
 export const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
 const TOKEN_KEY = "license-server.token";
 const ACCOUNT_KEY = "license-server.account";
@@ -28,6 +30,20 @@ export function setAccountId(id: string | null) {
   if (typeof window === "undefined") return;
   if (id) localStorage.setItem(ACCOUNT_KEY, id);
   else localStorage.removeItem(ACCOUNT_KEY);
+}
+
+const USER_KEY = "license-server.user";
+
+export function getUser(): User | null {
+  if (typeof window === "undefined") return null;
+  const raw = localStorage.getItem(USER_KEY);
+  return raw ? (JSON.parse(raw) as User) : null;
+}
+
+export function setUser(u: User | null) {
+  if (typeof window === "undefined") return;
+  if (u) localStorage.setItem(USER_KEY, JSON.stringify(u));
+  else localStorage.removeItem(USER_KEY);
 }
 
 export class ApiError extends Error {
@@ -71,6 +87,21 @@ export interface Envelope<T> {
 export interface EnvelopePage<T> {
   data: T[];
   meta: { cursor: string | null; has_more: boolean };
+}
+
+export interface User {
+  id: string;
+  email: string;
+  full_name?: string | null;
+  status: string;
+  created_at: string;
+}
+
+/** Response of /v1/auth/signup and /v1/auth/login. */
+export interface AuthSession {
+  user: User;
+  account: Account;
+  token: string; // plaintext personal token, shown once
 }
 
 export interface Account {
@@ -166,6 +197,18 @@ export interface ValidateResponse {
 // ── API methods ────────────────────────────────────────────────────────
 
 export const api = {
+  // — Email/password auth (self-service) —
+  signup: (email: string, password: string, fullName?: string, orgName?: string) =>
+    apiFetch<Envelope<AuthSession>>("/v1/auth/signup", {
+      method: "POST",
+      body: JSON.stringify({ email, password, full_name: fullName, org_name: orgName }),
+    }),
+  login: (email: string, password: string) =>
+    apiFetch<Envelope<AuthSession>>("/v1/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+
   // Bootstrap a new org (no auth). Returns the first admin token.
   createAccount: (slug: string, name: string) =>
     apiFetch<Envelope<CreateAccountResponse>>("/v1/accounts", {
