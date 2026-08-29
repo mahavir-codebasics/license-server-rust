@@ -1,0 +1,86 @@
+# Production stack for license-server on this host.
+#
+# Deployed layout (see deploy/ in the repo):
+#   nginx :80  →  /            static landing page + docs   (./site)
+#                /v1,/healthz  license-api (REST)
+#                /admin        license-ui  (Next.js, basePath=/admin)
+#   license-api also publishes gRPC :9090 directly (firewalled to Tailscale).
+#
+# Secrets come from .env next to this file (POSTGRES_PASSWORD, MASTER_KEY).
+
+name: license-server
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: license
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: license
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U license -d license"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+    mem_limit: 384m
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "48mb", "--maxmemory-policy", "noeviction"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+    mem_limit: 96m
+
+  license-api:
+    image: license-server-api:0.1.1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      LICENSE_SERVER__ROLE: all
+      LICENSE_SERVER__HTTP__HOST: 0.0.0.0
+      LICENSE_SERVER__HTTP__PORT: "8080"
+      LICENSE_SERVER__GRPC__HOST: 0.0.0.0
+      LICENSE_SERVER__GRPC__PORT: "9090"
+      LICENSE_SERVER__DATABASE__URL: postgresql://license:${POSTGRES_PASSWORD}@postgres:5432/license
+      LICENSE_SERVER__DATABASE__MAX_CONNECTIONS: "8"
+      LICENSE_SERVER__REDIS__URL: redis://redis:6379/0
+      LICENSE_SERVER__CRYPTO__MASTER_KEY: ${MASTER_KEY}
+      LICENSE_SERVER__LOG__FORMAT: json
+      LICENSE_SERVER__LOG__FILTER: info,license_server=info
+    ports:
+      - "9090:9090" # gRPC hot path (host firewall keeps it Tailscale-only)
+    restart: unless-stopped
+    mem_limit: 384m
+
+  license-ui:
+    image: license-server-ui:0.1.1
+    depends_on:
+      - license-api
+    restart: unless-stopped
+    mem_limit: 384m
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      - license-api
+      - license-ui
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./site:/var/www/site:ro
+    restart: unless-stopped
+    mem_limit: 96m
+
+volumes:
+  pgdata:

@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>license-server — self-hosted software licensing</title>
+<meta name="description" content="Self-hosted, multi-tenant software licensing &amp; distribution server. Rust + Axum + gRPC, Ed25519/RSA/JWT license keys, Next.js admin console.">
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90' fill='%234cc38a'>◆</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <a class="brand" href="/"><span class="brand-mark">◆</span> license-server</a>
+  <nav>
+    <a href="/docs/getting-started/">Docs</a>
+    <a href="/docs/api-reference/">API</a>
+    <a href="/admin/">Admin Console</a>
+  </nav>
+</header>
+
+<section class="hero">
+  <div class="status-badge" id="status"><span class="status-dot"></span><span id="status-text">checking service health…</span></div>
+  <h1>Software licensing,<br><span class="grad">self-hosted and fast.</span></h1>
+  <p class="tagline">
+    A performance-first, multi-tenant licensing &amp; distribution server in Rust.
+    Signed license keys, encrypted license files, machine activations, metering,
+    webhooks, and an admin console — your infrastructure, your keys.
+  </p>
+  <div class="cta-row">
+    <a class="btn btn-primary" href="/admin/">Open Admin Console</a>
+    <a class="btn btn-ghost" href="/docs/getting-started/">Read the Docs</a>
+    <a class="btn btn-ghost" href="/docs/api-reference/">API Reference</a>
+  </div>
+</section>
+
+<section class="section" id="quickstart">
+  <h2>Quick start</h2>
+  <p class="sub">Bootstrap an account, issue a signed license, validate it — three calls. The first <code>POST /v1/accounts</code> returns your admin token.</p>
+  <pre><code># 1 — bootstrap your organization (returns the first admin token)
+curl -s -X POST https://license.itih.in/v1/accounts \
+  -H 'content-type: application/json' \
+  -d '{"slug":"acme","name":"Acme Inc"}'
+
+# 2 — create a product + policy, then issue a signed license key
+curl -s -X POST https://license.itih.in/v1/accounts/$ACCOUNT_ID/licenses \
+  -H "authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' \
+  -d '{"product_id":"…","policy_id":"…"}'
+
+# 3 — validate it from your app (also available over gRPC :9090)
+curl -s -X POST https://license.itih.in/v1/accounts/$ACCOUNT_ID/licenses/$LICENSE_ID/actions/validate \
+  -H "authorization: Bearer $ADMIN_TOKEN"</code></pre>
+  <p class="sub">Full walkthrough in the <a href="/docs/getting-started/">Getting Started guide</a> · SDKs for <a href="/docs/sdk-guide/">Rust and TypeScript</a>.</p>
+</section>
+
+<section class="section">
+  <h2>Everything a licensing backend needs</h2>
+  <p class="sub">Phases 0–8 of the v1 roadmap are complete — 127 tests, live multi-DB isolation suites, and a wrk-measured hot path.</p>
+  <div class="grid">
+    <div class="card"><div class="icon">🔑</div><h3>Cryptographic license keys</h3><p>Ed25519, ECDSA-P256, RSA-2048 and JWT signing schemes, plus AES-256-GCM encrypt-then-sign license files (PEM certificates).</p></div>
+    <div class="card"><div class="icon">🏢</div><h3>Multi-tenant by design</h3><p>Every resource is org-scoped, enforced at the repository layer and — on Postgres — by Row-Level Security. Cross-tenant access is tested against all three databases.</p></div>
+    <div class="card"><div class="icon">⚡</div><h3>gRPC hot path</h3><p>Validate / activate / check-in / check-out over tonic on :9090 for sub-millisecond machine-to-server traffic; REST for everything else.</p></div>
+    <div class="card"><div class="icon">⏱️</div><h3>Background jobs</h3><p>Cron sweeps for expiry, culling and retirement, HMAC-signed webhooks with retries, and a full audit event log.</p></div>
+    <div class="card"><div class="icon">🪪</div><h3>OIDC SSO + tokens</h3><p>Just-in-time provisioning from your identity provider, bearer-token API auth, Redis token-bucket rate limiting and Idempotency-Key support.</p></div>
+    <div class="card"><div class="icon">🗄️</div><h3>Three databases</h3><p>PostgreSQL (UUIDv7 + JSONB + RLS), MySQL, and SQLite backends behind one Repository trait. Time-ordered IDs keep inserts append-mostly.</p></div>
+  </div>
+</section>
+
+<section class="section">
+  <h2>Documentation</h2>
+  <p class="sub">The complete docs for this instance — same content as the repo, rendered here.</p>
+  <div class="docs-cards">
+    <a class="doc-card" href="/docs/getting-started/"><h3>Getting Started →</h3><p>Five-minute tour: account → product → policy → license → validate.</p><span class="go">Read →</span></a>
+    <a class="doc-card" href="/docs/api-reference/"><h3>API Reference →</h3><p>Every REST endpoint, the gRPC service, envelopes, error codes, rate limits.</p><span class="go">Read →</span></a>
+    <a class="doc-card" href="/docs/sdk-guide/"><h3>SDK Guide →</h3><p>Rust <code>license-sdk</code> and TypeScript <code>@license-server/sdk</code> clients.</p><span class="go">Read →</span></a>
+    <a class="doc-card" href="/docs/webhooks/"><h3>Webhooks →</h3><p>HMAC signature verification, event types, retries.</p><span class="go">Read →</span></a>
+    <a class="doc-card" href="/docs/architecture/"><h3>Architecture →</h3><p>Crate layering, tenancy model, crypto subsystem, scale profile.</p><span class="go">Read →</span></a>
+    <a class="doc-card" href="/docs/deployment/"><h3>Deployment →</h3><p>Roles (api / worker / scheduler / all), configuration, production checklist.</p><span class="go">Read →</span></a>
+    <a class="doc-card" href="/docs/security-audit/"><h3>Security &amp; Performance Audit →</h3><p>15 evidence-cited findings, wrk-measured baselines, remediation order.</p><span class="go">Read →</span></a>
+    <a class="doc-card" href="/docs/design-spec/"><h3>Design Specification →</h3><p>The full v1 design document and phase plan.</p><span class="go">Read →</span></a>
+  </div>
+</section>
+
+<section class="section">
+  <h2>This instance</h2>
+  <p class="sub">Endpoints as deployed on this server (served via a Cloudflare Tunnel (TLS + DDoS protection); also reachable directly over Tailscale at <code>http://100.87.14.61</code>).</p>
+  <table class="endpoints">
+    <tr><th>Service</th><th>URL</th><th>Notes</th></tr>
+    <tr><td><code>GET /healthz</code></td><td><a href="/healthz">/healthz</a></td><td>Liveness + readiness probe</td></tr>
+    <tr><td>REST API</td><td><code>https://license.itih.in/v1</code></td><td>Bearer-token auth; <a href="/docs/api-reference/">reference</a></td></tr>
+    <tr><td>gRPC</td><td><code>100.87.14.61:9090</code></td><td>Hot path (direct TCP — use the Tailscale IP / tailnet)</td></tr>
+    <tr><td>Admin console</td><td><a href="/admin/">/admin/</a></td><td>Next.js 15 dashboard</td></tr>
+  </table>
+</section>
+
+<footer class="footer">
+  license-server-rust · Apache-2.0 · Rust alternative to <a href="https://github.com/keygen-sh/keygen-api">keygen</a> (not wire-compatible) · <a href="/healthz">status</a>
+</footer>
+
+<script>
+  fetch('/healthz').then(r => r.ok ? Promise.resolve() : Promise.reject())
+    .then(() => {
+      document.getElementById('status').classList.add('ok');
+      document.getElementById('status-text').textContent = 'all systems operational';
+    })
+    .catch(() => { document.getElementById('status-text').textContent = 'health check failed'; });
+</script>
+</body>
+</html>
