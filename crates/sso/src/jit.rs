@@ -275,6 +275,9 @@ mod tests {
         async fn update(&self, _account: &Account) -> license_domain::Result<Account> {
             unimplemented!("not used by JIT")
         }
+        async fn count(&self) -> license_domain::Result<u64> {
+            unimplemented!("not used by JIT")
+        }
         async fn list_for_user(
             &self,
             _user_id: UserId,

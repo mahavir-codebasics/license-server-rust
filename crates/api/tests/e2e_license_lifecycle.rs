@@ -185,6 +185,7 @@ async fn full_license_lifecycle() {
                 .method("POST")
                 .uri("/v1/accounts")
                 .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {admin_token}"))
                 .body(Body::from(
                     serde_json::json!({"slug":"globex","name":"Globex"}).to_string(),
                 ))
@@ -221,6 +222,7 @@ async fn full_license_lifecycle() {
                     .method("POST")
                     .uri("/v1/accounts")
                     .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {admin_token}"))
                     .body(Body::from(
                         serde_json::json!({"slug":"globex2","name":"Globex2"}).to_string(),
                     ))
@@ -483,6 +485,7 @@ async fn webhook_endpoint_crud() {
                 .method("POST")
                 .uri("/v1/accounts")
                 .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {tok}"))
                 .body(Body::from(
                     serde_json::json!({"slug":"otherco","name":"Other"}).to_string(),
                 ))

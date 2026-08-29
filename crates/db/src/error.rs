@@ -66,10 +66,9 @@ impl Pool {
     /// Connect from a URL, auto-detect backend, and run migrations.
     ///
     /// Postgres and MySQL require a reachable server (there is no in-memory
-    /// equivalent). The migration SQL for the detected backend is run verbatim;
-    /// both PG and MySQL migrations are written to be idempotent on objects they
-    /// own (`CREATE TABLE` will still fail on re-run — call this on a fresh DB,
-    /// or use the per-backend migration tracker in a real deploy).
+    /// equivalent). Migrations run once per bundle version, tracked in a
+    /// `_migrations` table — re-boots against an existing database skip
+    /// already-applied bundles (OPS-001).
     pub async fn connect(database_url: &str, max_connections: u32) -> Result<Self, DomainError> {
         let backend = crate::Backend::from_url(database_url)?;
         let max = max_connections.max(1);
@@ -85,10 +84,7 @@ impl Pool {
                     .connect_with(opts)
                     .await
                     .map_err(map_err)?;
-                sqlx::raw_sql(crate::migrations::SQLITE)
-                    .execute(&pool)
-                    .await
-                    .map_err(map_err)?;
+                Self::run_migrations_sqlite(&pool).await?;
                 Ok(Self::Sqlite(pool))
             }
             crate::Backend::Postgres => {
@@ -97,10 +93,7 @@ impl Pool {
                     .connect(database_url)
                     .await
                     .map_err(map_err)?;
-                sqlx::raw_sql(crate::migrations::POSTGRES)
-                    .execute(&pool)
-                    .await
-                    .map_err(map_err)?;
+                Self::run_migrations_pg(&pool).await?;
                 Ok(Self::Postgres(pool))
             }
             crate::Backend::Mysql => {
@@ -109,13 +102,101 @@ impl Pool {
                     .connect(database_url)
                     .await
                     .map_err(map_err)?;
-                sqlx::raw_sql(crate::migrations::MYSQL)
-                    .execute(&pool)
-                    .await
-                    .map_err(map_err)?;
+                Self::run_migrations_mysql(&pool).await?;
                 Ok(Self::Mysql(pool))
             }
         }
+    }
+
+    /// Run the embedded SQLite bundle if this version hasn't been applied.
+    async fn run_migrations_sqlite(pool: &sqlx::SqlitePool) -> Result<(), DomainError> {
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS _migrations (
+               version TEXT PRIMARY KEY,
+               applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        )
+        .execute(pool)
+        .await
+        .map_err(map_err)?;
+        let already: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _migrations WHERE version = ?")
+            .bind(crate::migrations::VERSION)
+            .fetch_one(pool)
+            .await
+            .map_err(map_err)?;
+        if already > 0 {
+            return Ok(());
+        }
+        sqlx::raw_sql(crate::migrations::SQLITE)
+            .execute(pool)
+            .await
+            .map_err(map_err)?;
+        sqlx::query("INSERT INTO _migrations (version) VALUES (?)")
+            .bind(crate::migrations::VERSION)
+            .execute(pool)
+            .await
+            .map_err(map_err)?;
+        Ok(())
+    }
+
+    /// Run the embedded PostgreSQL bundle if this version hasn't been applied.
+    async fn run_migrations_pg(pool: &sqlx::PgPool) -> Result<(), DomainError> {
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS _migrations (
+               version TEXT PRIMARY KEY,
+               applied_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+        )
+        .execute(pool)
+        .await
+        .map_err(map_err)?;
+        let already: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM _migrations WHERE version = $1")
+                .bind(crate::migrations::VERSION)
+                .fetch_one(pool)
+                .await
+                .map_err(map_err)?;
+        if already > 0 {
+            return Ok(());
+        }
+        sqlx::raw_sql(crate::migrations::POSTGRES)
+            .execute(pool)
+            .await
+            .map_err(map_err)?;
+        sqlx::query("INSERT INTO _migrations (version) VALUES ($1)")
+            .bind(crate::migrations::VERSION)
+            .execute(pool)
+            .await
+            .map_err(map_err)?;
+        Ok(())
+    }
+
+    /// Run the embedded MySQL bundle if this version hasn't been applied.
+    async fn run_migrations_mysql(pool: &sqlx::MySqlPool) -> Result<(), DomainError> {
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS _migrations (
+               version VARCHAR(64) PRIMARY KEY,
+               applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        )
+        .execute(pool)
+        .await
+        .map_err(map_err)?;
+        let already: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _migrations WHERE version = ?")
+            .bind(crate::migrations::VERSION)
+            .fetch_one(pool)
+            .await
+            .map_err(map_err)?;
+        if already > 0 {
+            return Ok(());
+        }
+        sqlx::raw_sql(crate::migrations::MYSQL)
+            .execute(pool)
+            .await
+            .map_err(map_err)?;
+        sqlx::query("INSERT INTO _migrations (version) VALUES (?)")
+            .bind(crate::migrations::VERSION)
+            .execute(pool)
+            .await
+            .map_err(map_err)?;
+        Ok(())
     }
 }
 

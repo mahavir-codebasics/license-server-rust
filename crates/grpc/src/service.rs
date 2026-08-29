@@ -74,6 +74,65 @@ impl LicenseService {
         self
     }
 
+    /// Resolve a presented bearer to its Token row. `Ok(None)` = anonymous.
+    /// A presented-but-invalid or expired token → `Unauthenticated` — a bad
+    /// credential is never silently downgraded to anonymous. Same
+    /// hash→`tokens.get_by_hash` resolution as the REST middleware.
+    async fn resolve_bearer(
+        &self,
+        bearer: Option<String>,
+    ) -> Result<Option<license_domain::Token>, Status> {
+        let Some(bearer) = bearer else {
+            return Ok(None);
+        };
+        let h = license_crypto::hash_token(&bearer);
+        let token = match self.repo.tokens().get_by_hash(&h).await {
+            Ok(t) => t,
+            Err(license_domain::DomainError::NotFound(_)) => {
+                return Err(Status::unauthenticated("invalid token"));
+            }
+            Err(e) => return Err(domain_to_status(e)),
+        };
+        if let Some(exp) = token.expiry {
+            if OffsetDateTime::now_utc() >= exp {
+                return Err(Status::unauthenticated("token expired"));
+            }
+        }
+        // Best-effort touch of last_used_at — don't block on it.
+        let repo = self.repo.clone();
+        let tok_id = token.id;
+        tokio::spawn(async move {
+            let _ = repo
+                .tokens()
+                .touch_last_used(tok_id, OffsetDateTime::now_utc())
+                .await;
+        });
+        Ok(Some(token))
+    }
+
+    /// Machine-lifecycle RPCs (activate/deactivate/ping/check-in/check-out)
+    /// require a valid token scoped to the request's account (SEC-002).
+    /// Any token kind works — fleets use product/license tokens; admins work
+    /// too — but an unauthenticated caller must never mutate machine state.
+    async fn require_token_for(
+        &self,
+        bearer: Option<String>,
+        aid: license_domain::AccountId,
+        action: &str,
+    ) -> Result<license_domain::Token, Status> {
+        let token = self.resolve_bearer(bearer).await?.ok_or_else(|| {
+            Status::unauthenticated(format!(
+                "missing bearer token — {action} requires `authorization: Bearer <token>` metadata"
+            ))
+        })?;
+        if token.account_id != aid {
+            return Err(Status::permission_denied(
+                "token does not belong to this account",
+            ));
+        }
+        Ok(token)
+    }
+
     /// Fixed-window counter for a validate path. Fail-open: Redis absent or
     /// faulting must never block legitimate validation. Mirrors
     /// license_api::rate_limit::check (duplicated to avoid an api dep).
@@ -104,12 +163,26 @@ fn limit_bucket(id: &str) -> String {
     format!("grpc:validate:{id}")
 }
 
+/// Extract the `Authorization: Bearer <token>` metadata value when a
+/// well-formed one is present. Malformed headers → `None` (caller proceeds
+/// anonymous, mirroring the REST soft-fail middleware).
+fn bearer_of<T>(req: &Request<T>) -> Option<String> {
+    let auth = req.metadata().get("authorization")?.to_str().ok()?;
+    let bearer = auth.strip_prefix("Bearer ")?.trim();
+    license_crypto::token::is_well_formed(bearer)?;
+    Some(bearer.to_owned())
+}
+
 #[tonic::async_trait]
 impl Trait for LicenseService {
     async fn validate(
         &self,
         req: Request<ValidateRequest>,
     ) -> Result<Response<ValidateResponse>, Status> {
+        // Anonymous allowed (offline-capable clients); a presented token must
+        // still be valid.
+        let bearer = bearer_of(&req);
+        self.resolve_bearer(bearer).await?;
         let r = req.into_inner();
         let aid = parse_uuid(&r.account_id, "account_id")?;
         let lid = parse_uuid(&r.license_id, "license_id")?;
@@ -137,6 +210,8 @@ impl Trait for LicenseService {
         &self,
         req: Request<ValidateKeyRequest>,
     ) -> Result<Response<ValidateResponse>, Status> {
+        let bearer = bearer_of(&req);
+        self.resolve_bearer(bearer).await?;
         let r = req.into_inner();
         if r.key.is_empty() {
             return Err(Status::invalid_argument("key is required"));
@@ -177,12 +252,14 @@ impl Trait for LicenseService {
         &self,
         req: Request<ActivateRequest>,
     ) -> Result<Response<MachineResponse>, Status> {
+        let bearer = bearer_of(&req);
         let r = req.into_inner();
         if r.fingerprint.is_empty() {
             return Err(Status::invalid_argument("fingerprint is required"));
         }
         let aid = license_domain::AccountId(parse_uuid(&r.account_id, "account_id")?);
         let lid = LicenseId(parse_uuid(&r.license_id, "license_id")?);
+        self.require_token_for(bearer, aid, "activate").await?;
 
         // Load license + policy to learn max_machines + heartbeat cadence.
         let license = self
@@ -300,9 +377,11 @@ impl Trait for LicenseService {
         &self,
         req: Request<DeactivateRequest>,
     ) -> Result<Response<DeactivateResponse>, Status> {
+        let bearer = bearer_of(&req);
         let r = req.into_inner();
         let aid = license_domain::AccountId(parse_uuid(&r.account_id, "account_id")?);
         let mid = parse_uuid(&r.machine_id, "machine_id")?;
+        self.require_token_for(bearer, aid, "deactivate").await?;
         self.repo
             .machines()
             .delete(aid, license_domain::MachineId(mid))
@@ -312,9 +391,11 @@ impl Trait for LicenseService {
     }
 
     async fn ping(&self, req: Request<PingRequest>) -> Result<Response<PingResponse>, Status> {
+        let bearer = bearer_of(&req);
         let r = req.into_inner();
         let aid = license_domain::AccountId(parse_uuid(&r.account_id, "account_id")?);
         let mid = parse_uuid(&r.machine_id, "machine_id")?;
+        self.require_token_for(bearer, aid, "ping").await?;
         let mut machine = self
             .repo
             .machines()
@@ -355,9 +436,11 @@ impl Trait for LicenseService {
         &self,
         req: Request<CheckInRequest>,
     ) -> Result<Response<CheckInResponse>, Status> {
+        let bearer = bearer_of(&req);
         let r = req.into_inner();
         let aid = license_domain::AccountId(parse_uuid(&r.account_id, "account_id")?);
         let lid = LicenseId(parse_uuid(&r.license_id, "license_id")?);
+        self.require_token_for(bearer, aid, "check-in").await?;
         let mut license = self
             .repo
             .licenses()
@@ -392,9 +475,11 @@ impl Trait for LicenseService {
         &self,
         req: Request<CheckOutRequest>,
     ) -> Result<Response<Self::CheckOutStream>, Status> {
+        let bearer = bearer_of(&req);
         let r = req.into_inner();
         let aid = license_domain::AccountId(parse_uuid(&r.account_id, "account_id")?);
         let lid = LicenseId(parse_uuid(&r.license_id, "license_id")?);
+        self.require_token_for(bearer, aid, "check-out").await?;
         let license = self
             .repo
             .licenses()
@@ -545,7 +630,9 @@ mod tests {
     }
 
     // Mirrors grpc_e2e::seed — keep in sync.
-    async fn seed(repo: &Arc<dyn Repository>) -> String {
+    async fn seed(
+        repo: &Arc<dyn Repository>,
+    ) -> (license_domain::AccountId, license_domain::LicenseId, String) {
         let account = Account::new("grpc-co", "gRPCCo");
         repo.accounts().create(&account).await.unwrap();
         let product = Product::new(account.id, "P");
@@ -564,7 +651,24 @@ mod tests {
         let mut license = License::new(account.id, product.id, policy.id);
         license.key_hash = signed.key_hash.clone();
         repo.licenses().create(&license).await.unwrap();
-        signed.key
+        (account.id, license.id, signed.key)
+    }
+
+    /// Mint an admin token for `aid` and return its plaintext.
+    async fn mint_token(repo: &Arc<dyn Repository>, aid: license_domain::AccountId) -> String {
+        let gen = license_crypto::generate_token(license_crypto::TokenPrefix::Admin);
+        let mut token =
+            license_domain::Token::new(aid, license_domain::TokenKind::Admin, gen.hash.clone());
+        token.name = Some("test".into());
+        repo.tokens().create(&token).await.unwrap();
+        gen.plaintext
+    }
+
+    fn authed_req<T>(msg: T, token: &str) -> Request<T> {
+        let mut req = Request::new(msg);
+        req.metadata_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+        req
     }
 
     #[tokio::test]
@@ -583,7 +687,7 @@ mod tests {
     #[tokio::test]
     async fn validate_key_still_validates_without_redis() {
         let repo = fresh_repo().await;
-        let key = seed(&repo).await;
+        let (_aid, _lid, key) = seed(&repo).await;
         let svc = LicenseService::new(repo, Arc::new([0x42u8; 32])).with_limits(None);
         let resp = svc
             .validate_key(Request::new(ValidateKeyRequest { key }))
@@ -603,6 +707,99 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::NotFound);
         assert_eq!(err.message(), "license not found");
+    }
+
+    // ── auth (SEC-002) ──
+
+    #[tokio::test]
+    async fn activate_without_token_is_unauthenticated() {
+        let repo = fresh_repo().await;
+        let (aid, lid, _key) = seed(&repo).await;
+        let svc = LicenseService::new(repo, Arc::new([0x42u8; 32]));
+        let err = svc
+            .activate(Request::new(ActivateRequest {
+                account_id: aid.to_string(),
+                license_id: lid.to_string(),
+                fingerprint: "fp-1".into(),
+                name: String::new(),
+                platform: String::new(),
+                core_count: 0,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn activate_with_unknown_token_is_unauthenticated() {
+        let repo = fresh_repo().await;
+        let (aid, lid, _key) = seed(&repo).await;
+        let svc = LicenseService::new(repo, Arc::new([0x42u8; 32]));
+        // Well-formed but never issued → invalid credential, not anonymous.
+        let ghost = license_crypto::generate_token(license_crypto::TokenPrefix::Admin).plaintext;
+        let err = svc
+            .activate(authed_req(
+                ActivateRequest {
+                    account_id: aid.to_string(),
+                    license_id: lid.to_string(),
+                    fingerprint: "fp-1".into(),
+                    name: String::new(),
+                    platform: String::new(),
+                    core_count: 0,
+                },
+                &ghost,
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn activate_with_foreign_account_token_is_permission_denied() {
+        let repo = fresh_repo().await;
+        let (aid, lid, _key) = seed(&repo).await;
+        let outsider = Account::new("outsider", "Outsider");
+        repo.accounts().create(&outsider).await.unwrap();
+        let token = mint_token(&repo, outsider.id).await;
+        let svc = LicenseService::new(repo, Arc::new([0x42u8; 32]));
+        let err = svc
+            .activate(authed_req(
+                ActivateRequest {
+                    account_id: aid.to_string(),
+                    license_id: lid.to_string(),
+                    fingerprint: "fp-1".into(),
+                    name: String::new(),
+                    platform: String::new(),
+                    core_count: 0,
+                },
+                &token,
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn activate_with_valid_account_token_succeeds() {
+        let repo = fresh_repo().await;
+        let (aid, lid, _key) = seed(&repo).await;
+        let token = mint_token(&repo, aid).await;
+        let svc = LicenseService::new(repo, Arc::new([0x42u8; 32]));
+        let resp = svc
+            .activate(authed_req(
+                ActivateRequest {
+                    account_id: aid.to_string(),
+                    license_id: lid.to_string(),
+                    fingerprint: "fp-1".into(),
+                    name: String::new(),
+                    platform: String::new(),
+                    core_count: 0,
+                },
+                &token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.into_inner().state, "active");
     }
 
     #[test]

@@ -1,5 +1,7 @@
 //! gRPC E2E: spin up the LicenseService on an ephemeral port, exercise the
 //! hot-path RPCs (Validate, ValidateKey, Activate, Ping, CheckIn, CheckOut).
+//! Machine-lifecycle RPCs require `authorization: Bearer <token>` metadata
+//! (SEC-002); validate/validate-key stay callable anonymously.
 
 use license_db::{Pool, SqliteRepository};
 use license_domain::repository::Repository;
@@ -41,9 +43,22 @@ async fn start_server_clean(
     (client, handle)
 }
 
+/// Wrap a request message with `authorization: Bearer <token>` metadata.
+fn authed<T>(msg: T, token: &str) -> tonic::Request<T> {
+    let mut req = tonic::Request::new(msg);
+    req.metadata_mut()
+        .insert("authorization", format!("Bearer {token}").parse().unwrap());
+    req
+}
+
 async fn seed(
     repo: &Arc<dyn Repository>,
-) -> (license_domain::AccountId, license_domain::LicenseId, String) {
+) -> (
+    license_domain::AccountId,
+    license_domain::LicenseId,
+    String,
+    String,
+) {
     let account = license_domain::Account::new("grpc-co", "gRPCCo");
     repo.accounts().create(&account).await.unwrap();
     let product = license_domain::Product::new(account.id, "P");
@@ -63,13 +78,24 @@ async fn seed(
     license.key_hash = signed.key_hash.clone();
     license.key = Some(signed.key.clone());
     repo.licenses().create(&license).await.unwrap();
-    (account.id, license.id, signed.key)
+
+    // Mint an admin token — machine-lifecycle RPCs require it (SEC-002).
+    let gen = license_crypto::generate_token(license_crypto::TokenPrefix::Admin);
+    let mut token = license_domain::Token::new(
+        account.id,
+        license_domain::TokenKind::Admin,
+        gen.hash.clone(),
+    );
+    token.name = Some("e2e admin".into());
+    repo.tokens().create(&token).await.unwrap();
+
+    (account.id, license.id, signed.key, gen.plaintext)
 }
 
 #[tokio::test]
 async fn validate_returns_valid() {
     let repo = fresh_repo().await;
-    let (aid, lid, _key) = seed(&repo).await;
+    let (aid, lid, _key, _tok) = seed(&repo).await;
     let (mut client, _h) = start_server_clean(repo).await;
 
     let resp = client
@@ -90,7 +116,7 @@ async fn validate_returns_valid() {
 #[tokio::test]
 async fn validate_key_resolves_by_raw_key() {
     let repo = fresh_repo().await;
-    let (_aid, _lid, key) = seed(&repo).await;
+    let (_aid, _lid, key, _tok) = seed(&repo).await;
     let (mut client, _h) = start_server_clean(repo).await;
 
     let resp = client
@@ -119,13 +145,12 @@ async fn validate_unknown_license_is_not_found() {
 }
 
 #[tokio::test]
-async fn activate_and_ping_round_trip() {
+async fn activate_without_token_is_unauthenticated() {
     let repo = fresh_repo().await;
-    let (aid, lid, _key) = seed(&repo).await;
+    let (aid, lid, _key, _tok) = seed(&repo).await;
     let (mut client, _h) = start_server_clean(repo).await;
 
-    // Activate
-    let resp = client
+    let res = client
         .activate(ActivateRequest {
             account_id: aid.to_string(),
             license_id: lid.to_string(),
@@ -134,6 +159,30 @@ async fn activate_and_ping_round_trip() {
             platform: "macos".into(),
             core_count: 8,
         })
+        .await;
+    let status = res.expect_err("unauthenticated activate must error");
+    assert_eq!(status.code(), tonic::Code::Unauthenticated);
+}
+
+#[tokio::test]
+async fn activate_and_ping_round_trip() {
+    let repo = fresh_repo().await;
+    let (aid, lid, _key, tok) = seed(&repo).await;
+    let (mut client, _h) = start_server_clean(repo).await;
+
+    // Activate
+    let resp = client
+        .activate(authed(
+            ActivateRequest {
+                account_id: aid.to_string(),
+                license_id: lid.to_string(),
+                fingerprint: "fp-grpc-1".into(),
+                name: "mbp".into(),
+                platform: "macos".into(),
+                core_count: 8,
+            },
+            &tok,
+        ))
         .await
         .expect("activate rpc");
     let machine = resp.into_inner();
@@ -143,10 +192,13 @@ async fn activate_and_ping_round_trip() {
 
     // Ping (refresh heartbeat)
     let resp = client
-        .ping(PingRequest {
-            account_id: aid.to_string(),
-            machine_id: mid,
-        })
+        .ping(authed(
+            PingRequest {
+                account_id: aid.to_string(),
+                machine_id: mid,
+            },
+            &tok,
+        ))
         .await
         .expect("ping rpc");
     let p = resp.into_inner();
@@ -156,14 +208,17 @@ async fn activate_and_ping_round_trip() {
 #[tokio::test]
 async fn check_in_advances_window() {
     let repo = fresh_repo().await;
-    let (aid, lid, _key) = seed(&repo).await;
+    let (aid, lid, _key, tok) = seed(&repo).await;
     let (mut client, _h) = start_server_clean(repo).await;
 
     let resp = client
-        .check_in(CheckInRequest {
-            account_id: aid.to_string(),
-            license_id: lid.to_string(),
-        })
+        .check_in(authed(
+            CheckInRequest {
+                account_id: aid.to_string(),
+                license_id: lid.to_string(),
+            },
+            &tok,
+        ))
         .await
         .expect("check_in rpc");
     let c = resp.into_inner();
@@ -174,15 +229,18 @@ async fn check_in_advances_window() {
 #[tokio::test]
 async fn check_out_streams_a_certificate() {
     let repo = fresh_repo().await;
-    let (aid, lid, _key) = seed(&repo).await;
+    let (aid, lid, _key, tok) = seed(&repo).await;
     let (mut client, _h) = start_server_clean(repo).await;
 
     let mut stream = client
-        .check_out(CheckOutRequest {
-            account_id: aid.to_string(),
-            license_id: lid.to_string(),
-            algorithm: "aes-256-gcm+ed25519".into(),
-        })
+        .check_out(authed(
+            CheckOutRequest {
+                account_id: aid.to_string(),
+                license_id: lid.to_string(),
+                algorithm: "aes-256-gcm+ed25519".into(),
+            },
+            &tok,
+        ))
         .await
         .expect("check_out rpc")
         .into_inner();

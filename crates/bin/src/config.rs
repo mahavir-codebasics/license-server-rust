@@ -123,8 +123,7 @@ pub struct TelemetryConfig {
     pub otlp_endpoint: Option<String>,
 }
 
-/// Comma-separated CORS origins allowed to call the API + reverse-proxy hop
-/// count governing XFF trust (see `client_ip`).
+/// CORS origins, XFF trust, bootstrap secret, and webhook egress policy.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct SecurityConfig {
     /// Comma-separated CORS origins allowed to call the API. Empty = same-origin only.
@@ -133,6 +132,16 @@ pub struct SecurityConfig {
     /// How many reverse-proxy hops sit directly in front of us (XFF trust).
     #[serde(default)]
     pub trusted_proxies: usize,
+    /// When set, `POST /v1/accounts` (which mints the first admin token)
+    /// requires a matching `X-Bootstrap-Secret` header. Strongly recommended
+    /// for any deployment reachable by untrusted clients.
+    #[serde(default)]
+    pub bootstrap_secret: Option<String>,
+    /// Explicit opt-out of the webhook SSRF guard, for deployments whose
+    /// receivers live on the private network. Default: block loopback/private/
+    /// link-local webhook targets.
+    #[serde(default)]
+    pub webhooks_allow_private: bool,
 }
 
 /// Top-level config.

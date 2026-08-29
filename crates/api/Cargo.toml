@@ -25,6 +25,7 @@ bytes.workspace = true
 redis.workspace = true
 argon2.workspace = true
 rand.workspace = true
+subtle.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

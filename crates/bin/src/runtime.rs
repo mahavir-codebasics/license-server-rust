@@ -84,7 +84,7 @@ pub async fn run_api(cfg: &Config) -> Result<()> {
 pub async fn run_worker(cfg: &Config) -> Result<()> {
     let repo = build_repo(cfg).await?;
     info!("worker role: starting webhook-delivery workers");
-    license_jobs::run_worker(repo, &cfg.redis.url)
+    license_jobs::run_worker(repo, &cfg.redis.url, cfg.security.webhooks_allow_private)
         .await
         .map_err(|e| anyhow::anyhow!("worker role: {e}"))?;
     info!("worker role: shutdown");
@@ -137,8 +137,9 @@ pub async fn run_all(cfg: &Config) -> Result<()> {
     // Jobs task (cron + workers together).
     let jobs_repo = repo.clone();
     let jobs_redis = cfg.redis.url.clone();
+    let jobs_allow_private = cfg.security.webhooks_allow_private;
     let jobs_task = tokio::spawn(async move {
-        license_jobs::run_all_jobs(jobs_repo, &jobs_redis)
+        license_jobs::run_all_jobs(jobs_repo, &jobs_redis, jobs_allow_private)
             .await
             .map_err(|e| anyhow::anyhow!("jobs: {e}"))
     });
@@ -182,6 +183,8 @@ async fn build_state(
     let mut state = license_api::extract::AppState::new(repo, master_secret);
     state = state.with_trusted_proxies(cfg.security.trusted_proxies);
     state.allowed_origins = license_api::extract::parse_origin_csv(&cfg.security.allowed_origins);
+    state.bootstrap_secret = cfg.security.bootstrap_secret.clone();
+    state.webhooks_allow_private = cfg.security.webhooks_allow_private;
     let mut redis_mgr: Option<ConnectionManager> = None;
     if !cfg.redis.url.is_empty() {
         match redis::Client::open(cfg.redis.url.as_str()) {
