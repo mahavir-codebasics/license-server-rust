@@ -2,11 +2,17 @@ site_name: license-server-rust
 site_description: >-
   Self-hostable, performance-first software licensing & distribution server
   in Rust — REST + gRPC, multi-DB, Ed25519/ECDSA/RSA/JWT signing.
+site_url: https://mahavirvataliya.github.io/license-server-rust/
+site_author: Mahavir Vataliya
 repo_url: https://github.com/mahavirvataliya/license-server-rust
 repo_name: mahavirvataliya/license-server-rust
+copyright: Copyright &copy; 2026 Mahavir Vataliya — Apache-2.0
 
 theme:
   name: material
+  custom_dir: docs/overrides # main.html: og:/twitter: meta tags for search + link unfurlers
+  logo: assets/logo.svg
+  favicon: assets/favicon.png
   palette:
     # auto light/dark to match the admin UI screenshots' aesthetic
     - media: "(prefers-color-scheme: light)"
@@ -22,6 +28,7 @@ theme:
   features:
     - navigation.sections
     - navigation.top
+    - navigation.footer
     - search.highlight
     - search.share
     - content.code.copy
@@ -32,6 +39,22 @@ extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/mahavirvataliya/license-server-rust
+    - icon: material/scale-balance
+      link: https://github.com/mahavirvataliya/license-server-rust/blob/main/LICENSE
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - API reference: api-reference.md
+  - SDK guide: sdk-guide.md
+  - Webhooks: webhooks.md
+  - Architecture: architecture.md
+  - Deployment: deployment.md
+  - Security audit: security-audit.md
+
+plugins:
+  - search
+  - meta # reads description/image from page front matter → og:/twitter: meta tags
 
 markdown_extensions:
   - admonition
@@ -44,6 +67,7 @@ markdown_extensions:
       permalink: true
 
 # Internal design/plan documents live under docs/superpowers/ — public repo,
-# but not part of the product documentation site.
+# but not part of the product documentation site. robots.txt / llms.txt are
+# plain files copied verbatim to the site root (crawl + LLM discovery).
 exclude_docs: |
   superpowers/

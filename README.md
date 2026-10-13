@@ -1,7 +1,15 @@
+<div align="center">
+
+<img src="docs/assets/logo-badge.svg" alt="license-server-rust logo" width="96">
+
 # license-server-rust
 
-[![CI](https://github.com/<OWNER>/license-server-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/<OWNER>/license-server-rust/actions/workflows/ci.yml)
+[![CI](https://github.com/mahavirvataliya/license-server-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/mahavirvataliya/license-server-rust/actions/workflows/ci.yml)
+[![Docs](https://github.com/mahavirvataliya/license-server-rust/actions/workflows/docs.yml/badge.svg)](https://mahavirvataliya.github.io/license-server-rust/)
+[![Docker](https://github.com/mahavirvataliya/license-server-rust/actions/workflows/docker.yml/badge.svg)](https://github.com/mahavirvataliya/license-server-rust/pkgs/container/license-server-api)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+
+</div>
 
 A performance-first, multi-tenant **software-licensing & distribution server**
 written in Rust — a self-hostable alternative to [keygen-sh/keygen-api].
@@ -13,8 +21,10 @@ written in Rust — a self-hostable alternative to [keygen-sh/keygen-api].
 > files), bearer-token auth, working REST API, **gRPC hot path**, **background
 > jobs** (cron sweeps + HMAC webhooks + audit log), **Next.js 15 admin UI**,
 > and **enterprise hardening** (OIDC SSO with JIT provisioning, Redis
-> rate-limiting, Idempotency-Key support, security-review test suite) — 127
-> tests + live PG/MySQL isolation suites + verified scheduler/worker/gRPC
+> rate-limiting, Idempotency-Key support, gRPC token auth, webhook SSRF
+> guard, bootstrap-secret gate, request-body limits, security-review test
+> suite) — 130+ tests + live PG/MySQL isolation suites + verified
+> scheduler/worker/gRPC
 > roles. See
 > [`docs/superpowers/specs/2026-07-25-license-server-rust-design.md`](docs/superpowers/specs/2026-07-25-license-server-rust-design.md)
 > for the full design and phase plan.
@@ -146,6 +156,13 @@ Pagination is **keyset/cursor-based** everywhere (no `OFFSET`).
 
 **Deferred (post-v1):** distribution registries (npm/PyPI/RubyGems/OCI/Tauri),
 SAML, fine-grained RBAC/environments, import/export, ClickHouse analytics.
+
+## Community & support
+
+- 📖 [Documentation](https://mahavirvataliya.github.io/license-server-rust/) — searchable guides, API reference, deployment.
+- 💬 [Discussions](https://github.com/mahavirvataliya/license-server-rust/discussions) — questions, ideas, community support ([support guide](SUPPORT.md)).
+- 🐛 [Issues](https://github.com/mahavirvataliya/license-server-rust/issues/new/choose) — bug reports with templates.
+- 🔒 [Security](SECURITY.md) — private vulnerability disclosure; please don't open public issues for security reports.
 
 ## License
 

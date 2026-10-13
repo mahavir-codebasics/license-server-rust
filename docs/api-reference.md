@@ -1,3 +1,7 @@
+---
+description: Complete REST + gRPC API reference for license-server-rust: endpoints, envelopes, error codes, keyset pagination, rate limits, and Idempotency-Key support.
+---
+
 # API Reference
 
 Base URL: `http://localhost:8080` · Version: `v1` · Transports: **REST/JSON** (this page) and **gRPC** (`licensev1.LicenseService`, port 9090 — see `proto/license.proto`).
@@ -23,7 +27,7 @@ Pagination: `?page[limit]=25&page[after]=<cursor>` (limit clamped to 1–100).
 
 ### Authentication
 
-`Authorization: Bearer <token>` — the same tokens work on REST and gRPC (gRPC: send the `authorization` metadata; see the security audit's SEC-002 note on gRPC auth enforcement status).
+`Authorization: Bearer <token>` — the same tokens work on REST and gRPC (gRPC: send the `authorization` **metadata**). On gRPC, the machine-lifecycle RPCs (`Activate`, `Deactivate`, `Ping`, `CheckIn`, `CheckOut`) **require** a valid token scoped to the request's account; `Validate`/`ValidateKey` may be called anonymously (a presented-but-invalid token is always rejected with `Unauthenticated`).
 
 | Token kind | Prefix | Can |
 |---|---|---|
@@ -53,6 +57,9 @@ returned once at creation.
 Per account+route-class token buckets: reads 600/min, mutations 120/min,
 `actions/validate` 2,000/min (SDKs hammer it). 429 responses carry
 `Retry-After`.
+
+Request bodies are capped at **1 MiB** (larger → 413). gRPC enforces tonic's
+default message limits.
 
 ### Idempotency
 
@@ -105,9 +112,12 @@ suspended user.
 
 ### `POST /v1/accounts` — bootstrap an org 🔓
 
-Unauthenticated by design (first-boot). Creates the account **and its first
-admin token** (shown once). See [security audit SEC-005](security-audit.md)
-for the production gating recommendation.
+Unauthenticated **only on a fresh deployment** (zero accounts). Once any org
+exists, anonymous calls are rejected with `403 already_bootstrapped` — create
+additional orgs with an authenticated admin token instead. Setting
+`LICENSE_SERVER__SECURITY__BOOTSTRAP_SECRET` requires every call to carry a
+matching `X-Bootstrap-Secret` header (constant-time compared). See
+[security audit SEC-005](security-audit.md).
 
 ```json
 // request
@@ -229,11 +239,16 @@ Proto: [`proto/license.proto`](https://github.com/mahavirvataliya/license-server
 |---|---|---|
 | `Validate` | `{account_id, license_id, fingerprint?}` → `{valid, state, detail, license}` | same logic as REST |
 | `ValidateKey` | `{key}` → `ValidateResponse` | resolve by the raw signed key |
-| `Activate` | `{account_id, license_id, fingerprint, name?, platform?, core_count?}` → `MachineResponse` | enforces `max_machines`; idempotent per fingerprint |
-| `Deactivate` | `{account_id, machine_id}` → `{deactivated}` | |
-| `Ping` | `{account_id, machine_id}` → `{alive, next_heartbeat}` | floating-license heartbeat |
-| `CheckIn` | `{account_id, license_id}` → `{ok, next_check_in}` | license-level heartbeat |
-| `CheckOut` | `{account_id, license_id, algorithm?}` → **stream** `CheckOutChunk` | certificate bytes in 4 KB chunks; first chunk carries the algorithm |
+| `Activate` | `{account_id, license_id, fingerprint, name?, platform?, core_count?}` → `MachineResponse` | 🔒 auth; enforces `max_machines`; idempotent per fingerprint |
+| `Deactivate` | `{account_id, machine_id}` → `{deactivated}` | 🔒 auth |
+| `Ping` | `{account_id, machine_id}` → `{alive, next_heartbeat}` | 🔒 auth; floating-license heartbeat |
+| `CheckIn` | `{account_id, license_id}` → `{ok, next_check_in}` | 🔒 auth; license-level heartbeat |
+| `CheckOut` | `{account_id, license_id, algorithm?}` → **stream** `CheckOutChunk` | 🔒 auth; certificate bytes in 4 KB chunks; first chunk carries the algorithm |
+
+🔒 = requires `authorization: Bearer <token>` metadata scoped to the request's
+account (any token kind — product/license tokens for device fleets, admin
+tokens for tooling). Missing or invalid tokens fail with `Unauthenticated`;
+tokens from a different account fail with `PermissionDenied`.
 
 Status mapping: `NotFound`, `AlreadyExists`, `InvalidArgument`,
 `FailedPrecondition` (policy violations / bad state), `PermissionDenied`,

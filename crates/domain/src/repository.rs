@@ -89,6 +89,9 @@ pub trait AccountRepo: Send + Sync {
     async fn get(&self, id: AccountId) -> Result<Account>;
     async fn get_by_slug(&self, slug: &str) -> Result<Account>;
     async fn update(&self, account: &Account) -> Result<Account>;
+    /// Total number of accounts. Used by the bootstrap gate (`POST /v1/accounts`
+    /// is only anonymously callable on a fresh deployment).
+    async fn count(&self) -> Result<u64>;
     /// List accounts a user belongs to.
     async fn list_for_user(&self, user_id: UserId, page: PageQuery) -> Result<Page<Account>>;
 }

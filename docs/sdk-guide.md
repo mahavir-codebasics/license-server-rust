@@ -1,3 +1,7 @@
+---
+description: Official Rust and TypeScript SDKs for license-server-rust — typed clients for license validation, activation, and the machine lifecycle.
+---
+
 # SDK Guide
 
 Official clients for license-server. Both are thin, fully-typed wrappers over

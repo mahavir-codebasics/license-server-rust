@@ -4,7 +4,8 @@
 //!   - A global [`auth::middleware`] resolves `Authorization: Bearer <token>`
 //!     to an [`AuthPrincipal`] in request extensions (or leaves it absent).
 //!   - Account bootstrap (`POST /v1/accounts`) is the only unauthenticated
-//!     write — it creates an org + emits the first admin token. Thereafter
+//!     write — it creates an org + emits the first admin token, gated by the
+//!     bootstrap-secret / fresh-deployment check (SEC-005). Thereafter
 //!     every tenant-scoped write requires an admin/product token (enforced
 //!     via [`OptionalAuth::require_admin`] / [`RequiresAuth`]).
 //!   - Read + validate/activate on *unprotected* accounts may be anonymous
@@ -16,6 +17,7 @@ use crate::extract::{extract_page, AppState};
 use crate::response::{Envelope, EnvelopePage};
 use axum::{
     extract::{Path, State},
+    http::HeaderMap,
     middleware,
     routing::{get, post},
     Json, Router,
@@ -28,6 +30,10 @@ use serde_json::json;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
+/// Max accepted JSON body. Metadata blobs don't need more; an unbounded body
+/// extractor is a memory-exhaustion DoS vector (SEC-008).
+const MAX_BODY_BYTES: usize = 1024 * 1024;
+
 /// Build the v1 router with the given shared state. The auth middleware runs
 /// on every request (soft-fail: missing/invalid token → anonymous).
 pub fn router(state: AppState) -> Router {
@@ -36,6 +42,9 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(root))
         // — Accounts (orgs) —
         .route("/v1/accounts", post(create_account).get(list_accounts))
+        // — Self-service auth (email + password) —
+        .route("/v1/auth/signup", post(crate::password_auth::signup))
+        .route("/v1/auth/login", post(crate::password_auth::login))
         .route("/v1/accounts/:account_id", get(get_account))
         // — Tokens —
         .route(
@@ -103,7 +112,7 @@ pub fn router(state: AppState) -> Router {
             crate::rate_limit::middleware,
         ))
         .with_state(state)
-        .layer(cors);
+        .layer((cors, axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES)));
     with_telemetry(app)
 }
 
@@ -131,6 +140,15 @@ fn panic_envelope(_panic: Box<dyn std::any::Any + Send>) -> axum::response::Resp
 }
 
 // ── CORS ──────────────────────────────────────────────────────────────
+
+/// Constant-time comparison for the bootstrap secret (SEC-005). Length is
+/// checked first — the short-circuit leaks at most the expected length.
+fn bootstrap_secret_eq(provided: &str, expected: &str) -> bool {
+    use subtle::ConstantTimeEq;
+    let (a, b) = (provided.as_bytes(), expected.as_bytes());
+    a.len() == b.len() && bool::from(a.ct_eq(b))
+}
+
 /// Empty list = same-origin only (no CORS headers emitted). Non-empty =
 /// explicit allow-list. Wildcard "*" restores the old permissive mode for
 /// local dev explicitly.
@@ -180,17 +198,46 @@ pub struct CreateAccountResponse {
 
 async fn create_account(
     State(state): State<AppState>,
+    headers: HeaderMap,
     auth: OptionalAuth,
     Json(body): Json<CreateAccountBody>,
 ) -> ApiResult<Envelope<CreateAccountResponse>> {
     if body.slug.trim().is_empty() {
         return Err(ApiError::bad_request("slug is required"));
     }
-    // If the caller is already authenticated (an existing admin somewhere),
-    // allow creating a new org. If anonymous, this is the bootstrap path —
-    // also allowed (it's how the very first org is created). Either way the
-    // new org gets its own fresh admin token below.
-    let _ = auth;
+    // ── Bootstrap gate (SEC-005) ──
+    // This endpoint mints admin tokens, so anonymous access is restricted:
+    //   - secret configured → ALWAYS require `X-Bootstrap-Secret` (constant-time);
+    //   - no secret → anonymous bootstrap is a fresh-deployment privilege
+    //     (zero accounts); authenticated admins may always create more orgs.
+    match (&state.bootstrap_secret, auth.0.as_ref()) {
+        (Some(expected), _) => {
+            let provided = headers
+                .get("x-bootstrap-secret")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if !bootstrap_secret_eq(provided, expected) {
+                return Err(ApiError::new(
+                    axum::http::StatusCode::FORBIDDEN,
+                    "bootstrap_secret_required",
+                    "bootstrap secret missing or wrong",
+                    "set the X-Bootstrap-Secret header (LICENSE_SERVER__SECURITY__BOOTSTRAP_SECRET)",
+                ));
+            }
+        }
+        (None, None) => {
+            if state.repo.accounts().count().await.unwrap_or(1) > 0 {
+                return Err(ApiError::new(
+                    axum::http::StatusCode::FORBIDDEN,
+                    "already_bootstrapped",
+                    "this server is already bootstrapped",
+                    "create additional orgs with an authenticated admin token, or configure \
+                     LICENSE_SERVER__SECURITY__BOOTSTRAP_SECRET to enable API bootstrap",
+                ));
+            }
+        }
+        (None, Some(_)) => {}
+    }
     let account = Account::new(body.slug, body.name);
     let account = state.repo.accounts().create(&account).await?;
 
@@ -740,9 +787,13 @@ async fn create_webhook_endpoint(
     let principal = auth.0;
     let aid = parse_account_id(&account_id)?;
     require_account_write(&principal, aid)?;
-    if body.url.trim().is_empty() || !body.url.starts_with("http") {
-        return Err(ApiError::bad_request("url must be a valid http(s) URL"));
+    if body.url.trim().is_empty() {
+        return Err(ApiError::bad_request("url is required"));
     }
+    // SSRF guard at creation time: scheme + no localhost/private IP literals.
+    // (Full DNS validation re-runs before every delivery.)
+    license_jobs::webhook::validate_endpoint_url(&body.url)
+        .map_err(|reason| ApiError::bad_request(format!("url rejected: {reason}")))?;
     // Generate a per-endpoint HMAC secret (32 bytes hex).
     let secret = license_crypto::sha256_hex(&license_crypto::random_32());
     let mut endpoint = WebhookEndpoint::new(aid, body.url, secret.clone());

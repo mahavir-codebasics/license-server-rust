@@ -1,8 +1,18 @@
+---
+description: Security & performance audit of license-server-rust: findings with remediations, verified strengths, and wrk-measured load-test baselines.
+---
+
 # Security & Performance Audit — license-server-rust
 
 **Date:** 2026-08-14
 **Scope:** Full workspace — Rust backend (axum/tonic/sqlx/apalis), Next.js 15 admin UI, Docker deployment.
 **Method:** Manual code review against the Next.js security spec (skill reference), OWASP guidance, and Rust/axum best practices. Every finding cites file:line evidence. Load-test numbers measured with `wrk` against a release build + PostgreSQL 16.
+
+> **Update 2026-08-29:** the two critical highs of the remediation order are closed —
+> **OPS-001** (idempotent tracked migrations), **SEC-002** (gRPC auth), **SEC-003**
+> (async Redis), **SEC-004** (CORS allow-list), **SEC-005** (bootstrap gate),
+> **SEC-007** (webhook SSRF guard), and **SEC-008** (body-size limit) are fixed
+> and covered by new tests. Open: SEC-006, SEC-009, SEC-013, SEC-014, PERF-002/004/005/006.
 
 > Note: no Rust-specific reference spec was available in the review tooling; Rust backend findings are based on general web-security and Rust-ecosystem best practices.
 
@@ -37,6 +47,7 @@ Performance is fundamentally sound — the HTTP framework saturates at **178k RP
 - **Impact:** Anyone who can reach port 9090 can: activate machines on any license (exhausting floating seats / node-lock limits), check out license-file certificates, ping/deactivate arbitrary machines, and enumerate license validity by UUID. This is the entire machine-facing attack surface, unauthenticated.
 - **Fix (recommended):** Add a tonic interceptor that extracts `authorization` metadata, hashes it, resolves the token via `tokens().get_by_hash()` (identical logic to `auth::resolve`), and rejects with `Status::unauthenticated` on failure. For `Validate`/`ValidateKey`, optionally honor the account's `protection_mode` for anonymous client validation (mirroring the REST policy).
 - **Mitigation until fixed:** Do not expose port 9090 outside localhost/private network; firewall it at the edge.
+- **Status:** ✅ **Fixed 2026-08-29** — `crates/grpc/src/service.rs` resolves the `authorization` metadata against the same token-hash store as REST. `Activate`/`Deactivate`/`Ping`/`CheckIn`/`CheckOut` require a valid token scoped to the request's account (`Unauthenticated`/`PermissionDenied` otherwise); `Validate`/`ValidateKey` remain anonymous-capable but reject presented-invalid tokens. Covered by 4 new service tests + a gRPC E2E test.
 
 ### HIGH
 
@@ -46,6 +57,7 @@ Performance is fundamentally sound — the HTTP framework saturates at **178k RP
 - **Evidence:** Both modules call `client.get_connection()` (a **blocking** TCP connect) and use the synchronous `redis::Commands` API inside async middleware/handlers running on the tokio executor.
 - **Impact:** (a) Every request opens a brand-new TCP connection to Redis (no pooling). (b) Under load, the blocking connect+query stalls executor threads — the rate limiter itself becomes a denial-of-service vector, the exact failure mode it exists to prevent.
 - **Fix:** Use the async API — keep one `redis::aio::ConnectionManager` in `AppState` (it auto-reconnects and is cheap to clone) and call `redis::AsyncCommands` / `query_async`. Alternatively `tokio::task::spawn_blocking` as a stopgap.
+- **Status:** ✅ **Fixed** — both modules use a shared `ConnectionManager` + `AsyncCommands` (gRPC validate limiter uses an atomic INCR+EXPIRE Lua script).
 
 #### SEC-004: CORS allows any origin, unconditionally
 
@@ -53,6 +65,7 @@ Performance is fundamentally sound — the HTTP framework saturates at **178k RP
 - **Evidence:** The comment says "in production, restrict the origin instead of `Any`" but there is no configuration path to do so; every deployment ships wildcard CORS.
 - **Impact:** Any website can issue authenticated requests from a victim's browser if a token is ever exposed browser-side (see SEC-006), and wildcard CORS significantly widens attack surface for any future cookie-based session.
 - **Fix:** Add `LICENSE_SERVER__HTTP__CORS_ORIGINS` (comma-separated) to `Config`; build the `CorsLayer` from `Vec<HeaderValue>`; default to same-origin (no CORS layer) when unset. `Any` only behind an explicit `*` opt-in for development.
+- **Status:** ✅ **Fixed** — `build_cors` in `crates/api/src/routes.rs`; `LICENSE_SERVER__SECURITY__ALLOWED_ORIGINS`, default same-origin, `*` is the explicit dev opt-in.
 
 #### SEC-005: Unauthenticated organization bootstrap
 
@@ -60,6 +73,7 @@ Performance is fundamentally sound — the HTTP framework saturates at **178k RP
 - **Evidence:** The handler takes `OptionalAuth` but explicitly ignores it (`let _ = auth;`); there is no setup-secret gate or first-boot-only restriction.
 - **Impact:** Anyone who can reach the API can create unlimited organizations and receive valid admin tokens — an unbounded resource-exhaustion and foothold vector in any public deployment.
 - **Fix:** Gate with a `LICENSE_SERVER__BOOTSTRAP_SECRET` env: if set, require `X-Bootstrap-Secret` on `POST /v1/accounts`; if unset **and** the accounts table is non-empty (server already bootstrapped), reject with 403. Keep open only for the true first-boot/dev case.
+- **Status:** ✅ **Fixed 2026-08-29** — exactly the recommended behavior (`LICENSE_SERVER__SECURITY__BOOTSTRAP_SECRET`, constant-time header compare, fresh-deployment window, authenticated admins may still create orgs); backed by `AccountRepo::count()` on all three databases.
 
 ### MEDIUM
 
@@ -76,6 +90,7 @@ Performance is fundamentally sound — the HTTP framework saturates at **178k RP
 - **Evidence:** The URL comes from account admins (`POST /webhooks/endpoints`); the worker fetches it from the server's network position. No blocking of private ranges, link-local, or cloud metadata endpoints.
 - **Impact:** A malicious/compromised org admin can probe and exfiltrate from internal services — including cloud metadata endpoints (`169.254.169.254`) which can leak instance credentials.
 - **Fix:** Before delivery, resolve the host and reject private/loopback/link-local ranges and cloud-metadata IPs; enforce `http`/`https` schemes; disable or audit redirects. Document an explicit-allowlist option for internal webhook targets.
+- **Status:** ✅ **Fixed 2026-08-29** — `validate_public_url` re-resolves the host and rejects non-public targets before every delivery (`validate_endpoint_url` re-checks scheme/localhost/literals at registration); redirects are disabled on the delivery client; explicit opt-out via `LICENSE_SERVER__SECURITY__WEBHOOKS_ALLOW_PRIVATE`. Known residual: a DNS-rebinding race between our resolution and reqwest's — documented in `crates/jobs/src/webhook.rs`.
 
 #### SEC-008: No request body size limit
 
@@ -83,6 +98,7 @@ Performance is fundamentally sound — the HTTP framework saturates at **178k RP
 - **Evidence:** All JSON body extractors accept unbounded bodies by default.
 - **Impact:** Memory-exhaustion DoS via large payloads on any endpoint.
 - **Fix:** Add a global body limit (e.g. 1 MiB; metadata blobs don't need more) via `DefaultBodyLimit::max(1024 * 1024)`.
+- **Status:** ✅ **Fixed 2026-08-29** — `DefaultBodyLimit::max(1 MiB)` on the v1 router.
 
 #### SEC-009: License-file checkout signs with a throwaway keypair — files are unverifiable
 
@@ -178,15 +194,15 @@ Performance is fundamentally sound — the HTTP framework saturates at **178k RP
 
 ## Prioritized remediation order
 
-1. **OPS-001** tracked/idempotent migrations — every restart currently crashes; blocks all deployment
-2. **SEC-002** gRPC auth interceptor (blocks any exposure of :9090 until done)
-3. **SEC-003/PERF-001** async Redis ConnectionManager (one change fixes a High + the top perf issue)
+1. ✅ **OPS-001** tracked/idempotent migrations — every restart currently crashes; blocks all deployment
+2. ✅ **SEC-002** gRPC auth interceptor (blocks any exposure of :9090 until done)
+3. ✅ **SEC-003/PERF-001** async Redis ConnectionManager (one change fixes a High + the top perf issue)
 4. **PERF-002** Redis token cache (+ consider co-fetching license+policy in validate)
-5. **SEC-004** configurable CORS origins
-6. **SEC-005** bootstrap secret gate
+5. ✅ **SEC-004** configurable CORS origins
+6. ✅ **SEC-005** bootstrap secret gate
 7. **SEC-009** persisted SigningKey + public-key endpoint (makes checkout real)
 8. **SEC-006/SEC-014** UI session hardening + CSP
-9. **SEC-007** webhook SSRF guards
-10. **SEC-008** body-size limit; **PERF-004/005/006** as capacity work
+9. ✅ **SEC-007** webhook SSRF guards
+10. ✅ **SEC-008** body-size limit; **PERF-004/005/006** as capacity work
 
 *(SEC-001 — the Next.js CVE — was fixed and build-verified during this audit.)*

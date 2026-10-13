@@ -22,9 +22,15 @@ ui/node_modules
 ui/.next
 ui/out
 ui/.env*.local
+ui/.pnpm-store
 
 # Docker volumes
 docker/data/
+
+# Deploy tooling (generated site + docs-renderer deps; rebuild with
+# `node build-site.mjs` and `npm install` in deploy/)
+deploy/node_modules/
+deploy/site/
 
 # Test artifacts
 *.profraw
@@ -32,6 +38,10 @@ tarpaulin-report.html
 
 # ZCode session artifacts
 .zcode/
+.omo/
+
+# Stray nested build output
+crates/db/target/
 
 # Mimosa plugin artifacts
 .mimosa/

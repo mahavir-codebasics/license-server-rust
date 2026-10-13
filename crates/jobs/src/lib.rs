@@ -25,7 +25,9 @@ pub mod event;
 pub mod webhook;
 
 pub use event::{record, warn};
-pub use webhook::{deliver_webhook, sign_webhook, WebhookDeliveryJob};
+pub use webhook::{
+    deliver_webhook, sign_webhook, validate_endpoint_url, validate_public_url, WebhookDeliveryJob,
+};
 
 use apalis::layers::WorkerBuilderExt;
 use apalis::prelude::{Monitor, WorkerBuilder, WorkerFactoryFn};
@@ -72,21 +74,25 @@ pub async fn run_scheduler(repo: Arc<dyn Repository>) -> anyhow::Result<()> {
 }
 
 /// Run ONLY the Redis-backed workers (webhook delivery), until shutdown.
-/// Use for the `worker` role. `redis_url` connects to the queue.
-pub async fn run_worker(repo: Arc<dyn Repository>, redis_url: &str) -> anyhow::Result<()> {
+/// Use for the `worker` role. `redis_url` connects to the queue. `allow_private`
+/// opts out of the webhook SSRF guard for internal-network receivers.
+pub async fn run_worker(
+    repo: Arc<dyn Repository>,
+    redis_url: &str,
+    allow_private: bool,
+) -> anyhow::Result<()> {
     tracing::info!("worker: starting redis workers");
     let storage = webhook::webhook_storage(redis_url)
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
-    let http = reqwest::Client::builder()
-        .build()
-        .map_err(|e| anyhow::anyhow!("http client: {e}"))?;
+    let http = webhook_http_client();
 
     let monitor = Monitor::new()
         .register(
             WorkerBuilder::new("webhook-delivery")
                 .data(repo)
                 .data(http)
+                .data(allow_private)
                 // Limits in-flight deliveries. Requires apalis `layers` feature
                 // (which pulls `tower/limit`); see Cargo.toml.
                 .concurrency(8)
@@ -103,15 +109,26 @@ pub async fn run_worker(repo: Arc<dyn Repository>, redis_url: &str) -> anyhow::R
     Ok(())
 }
 
+/// Delivery client: redirects disabled so a webhook can't 302 its way past the
+/// SSRF guard onto a private target.
+fn webhook_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("reqwest client builds without runtime config")
+}
+
 /// Run everything (cron + workers) in one process. Use for `all` / dev.
-pub async fn run_all_jobs(repo: Arc<dyn Repository>, redis_url: &str) -> anyhow::Result<()> {
+pub async fn run_all_jobs(
+    repo: Arc<dyn Repository>,
+    redis_url: &str,
+    allow_private: bool,
+) -> anyhow::Result<()> {
     tracing::info!("jobs(all): starting scheduler + workers");
     let storage = webhook::webhook_storage(redis_url)
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
-    let http = reqwest::Client::builder()
-        .build()
-        .map_err(|e| anyhow::anyhow!("http client: {e}"))?;
+    let http = webhook_http_client();
 
     let monitor = Monitor::new()
         .register(
@@ -142,6 +159,7 @@ pub async fn run_all_jobs(repo: Arc<dyn Repository>, redis_url: &str) -> anyhow:
             WorkerBuilder::new("webhook-delivery")
                 .data(repo)
                 .data(http)
+                .data(allow_private)
                 .concurrency(8)
                 .backend(storage)
                 .build_fn(webhook::deliver_webhook),

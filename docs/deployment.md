@@ -1,3 +1,7 @@
+---
+description: Deploy license-server-rust in production — api/worker/scheduler roles, configuration reference, TLS termination, Docker Compose, and a hardening checklist.
+---
+
 # Deployment Guide
 
 From single-binary dev to hardened production.
@@ -62,14 +66,20 @@ run as non-root.
 
 - [ ] TLS termination at a reverse proxy (the app speaks plaintext HTTP/1.1 +
       h2c; do not expose :8080/:9090 directly)
-- [ ] Proxy-level rate limiting + body limits (app limiter fails open if
-      Redis is down — by design; see SEC-010)
-- [ ] Firewall gRPC :9090 to trusted networks until [SEC-002 (gRPC auth)](security-audit.md) lands
+- [ ] Proxy-level rate limiting (app limiter fails open if Redis is down —
+      by design; see SEC-010; the app already caps bodies at 1 MiB)
+- [ ] Firewall gRPC :9090 to trusted networks (RPCs are now authenticated —
+      SEC-002 — but the port still shouldn't be public)
+- [ ] Set `LICENSE_SERVER__SECURITY__BOOTSTRAP_SECRET` so `POST /v1/accounts`
+      requires an `X-Bootstrap-Secret` header (SEC-005)
 
 **App**
 
-- [ ] Work through the [security audit remediation order](security-audit.md#prioritized-remediation-order) —
-      at minimum OPS-001 (migrations), SEC-002, SEC-003, SEC-004, SEC-005
+- [ ] Review the [security audit](security-audit.md) — OPS-001 (idempotent
+      migrations), SEC-002 (gRPC auth), SEC-003 (async Redis), SEC-004 (CORS
+      allow-list), SEC-005 (bootstrap gate), SEC-007 (webhook SSRF), and
+      SEC-008 (body limit) are fixed; consider the remaining lower-severity
+      items
 - [ ] Master key from a secret manager; rotation procedure documented
 - [ ] `LOG__FORMAT=json`, ship to aggregation; secrets are redacted by the
       app but double-check your proxy logs (Authorization headers!)
@@ -79,9 +89,6 @@ run as non-root.
 - [ ] Postgres (recommended for scale; RLS defense-in-depth)
 - [ ] Backups + PITR; test restore
 - [ ] Connection sizing: start `MAX_CONNECTIONS ≈ (cores × 4)`, watch pool wait
-- [ ] **OPS-001 caveat:** migrations currently run raw on boot and are not
-      re-run safe — until tracked migrations land, boot new deployments
-      against a fresh database and treat schema changes explicitly
 
 **Redis**
 

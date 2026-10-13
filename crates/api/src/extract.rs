@@ -27,6 +27,12 @@ pub struct AppState {
     /// CORS origins allowed to call the API (parsed from config csv).
     /// Empty = same-origin only; `"*"` = allow any origin.
     pub allowed_origins: Vec<String>,
+    /// When Some(secret), `POST /v1/accounts` requires a matching
+    /// `X-Bootstrap-Secret` header. When None, anonymous bootstrapping is
+    /// allowed only while the deployment has zero accounts.
+    pub bootstrap_secret: Option<String>,
+    /// Explicit opt-out of the webhook SSRF guard (private-network receivers).
+    pub webhooks_allow_private: bool,
 }
 
 impl AppState {
@@ -37,6 +43,8 @@ impl AppState {
             redis: None,
             trusted_proxies: 0,
             allowed_origins: Vec::new(),
+            bootstrap_secret: None,
+            webhooks_allow_private: false,
         }
     }
 

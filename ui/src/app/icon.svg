@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="license-server badge">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1e293b"/>
+      <stop offset="1" stop-color="#020617"/>
+    </linearGradient>
+    <linearGradient id="key" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fdba74"/>
+      <stop offset="0.5" stop-color="#f97316"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#bg)"/>
+  <rect x="18" y="18" width="476" height="476" rx="100" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="3"/>
+  <!-- Key glyph: bow ring + shaft + two teeth, tilted 45° up-right -->
+  <g transform="rotate(-45 256 256) scale(0.94) translate(16 16)" fill="none" stroke="url(#key)">
+    <circle cx="168" cy="256" r="66" stroke-width="40"/>
+    <rect x="240" y="234" width="196" height="44" rx="22" fill="url(#key)" stroke="none"/>
+    <rect x="368" y="268" width="26" height="56" rx="9" fill="url(#key)" stroke="none"/>
+    <rect x="410" y="268" width="26" height="46" rx="9" fill="url(#key)" stroke="none"/>
+  </g>
+</svg>

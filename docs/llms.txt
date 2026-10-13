@@ -1,0 +1,33 @@
+# license-server-rust
+
+> Self-hostable, performance-first, multi-tenant software licensing & distribution server written in Rust. Issues cryptographically signed license keys (Ed25519, ECDSA-P256, RSA-2048, JWT RS256/EdDSA) and encrypted license files (AES-256-GCM encrypt-then-sign), serves a REST + gRPC API, runs on SQLite, PostgreSQL, or MySQL, and ships with a Next.js admin UI, official Rust and TypeScript SDKs, HMAC-signed webhooks, audit logging, OIDC SSO, and Redis rate limiting. A self-hostable alternative to keygen.sh (not wire-compatible). Apache-2.0 licensed.
+
+Run it: `docker compose up` (Postgres + Redis + API), or `cargo run -p license-server`. Bootstrap an org with `POST /v1/accounts`, create a product → policy → license, then validate licenses over REST (`POST /v1/accounts/{accountId}/licenses/{licenseId}/actions/validate`) or gRPC.
+
+## Docs
+
+- [Getting started](https://mahavirvataliya.github.io/license-server-rust/getting-started/): 5-minute tour — org → product → policy → license → validate.
+- [API reference](https://mahavirvataliya.github.io/license-server-rust/api-reference/): every REST endpoint, envelopes, error codes, rate limits, idempotency, and the gRPC service.
+- [SDK guide](https://mahavirvataliya.github.io/license-server-rust/sdk-guide/): Rust (`license-sdk`) and TypeScript (`@license-server/sdk`) clients with examples.
+- [Webhooks](https://mahavirvataliya.github.io/license-server-rust/webhooks/): HMAC signature verification (TypeScript + Rust snippets) and retry behavior.
+- [Architecture](https://mahavirvataliya.github.io/license-server-rust/architecture/): crate layering, multi-DB tenancy model (Postgres RLS), crypto subsystem, background jobs, scale profile.
+- [Deployment](https://mahavirvataliya.github.io/license-server-rust/deployment/): roles (api/worker/scheduler), configuration reference, production checklist.
+- [Security & performance audit](https://mahavirvataliya.github.io/license-server-rust/security-audit/): findings, remediations, and measured load-test baselines.
+
+## Key facts
+
+- License state machine: activate / suspend / reinstate / revoke / renew / expire, metering, check-in; enforced in a pure domain crate with full unit-test coverage.
+- Signing: 5 license-key schemes plus encrypted PEM license-file certificates (8 algorithm tuples); keys stored only as SHA-256 hashes.
+- Databases: SQLite (dev/test), PostgreSQL (UUID/JSONB + Row-Level Security), MySQL (BINARY(16) UUIDs); auto-selected from `DATABASE_URL`.
+- Auth: bearer tokens, bootstrap admin token, email+password self-serve signup/login, OIDC SSO with JIT provisioning.
+- Hardening: Redis token-bucket rate limiting, Idempotency-Key support, configurable CORS allow-list, secrets redaction in logs, audit event log.
+- IDs are UUIDv7 (time-ordered); all list endpoints use keyset/cursor pagination.
+- Configuration is environment-first: prefix `LICENSE_SERVER__`, `__` nests (e.g. `LICENSE_SERVER__CRYPTO__MASTER_KEY`).
+
+## Repository
+
+- [Source code](https://github.com/mahavirvataliya/license-server-rust): the full workspace (Rust crates + Next.js UI + SDKs).
+- [Issues](https://github.com/mahavirvataliya/license-server-rust/issues): bug reports and feature requests.
+- [Discussions](https://github.com/mahavirvataliya/license-server-rust/discussions): questions, ideas, and community support.
+- [Security policy](https://github.com/mahavirvataliya/license-server-rust/blob/main/SECURITY.md): how to report vulnerabilities privately.
+- [Contributing](https://github.com/mahavirvataliya/license-server-rust/blob/main/CONTRIBUTING.md): development setup and PR guidelines.

@@ -182,6 +182,14 @@ impl AccountRepo for PostgresRepository {
         row_to_account(&row)
     }
 
+    async fn count(&self) -> Result<u64> {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(map_err)?;
+        Ok(n.max(0) as u64)
+    }
+
     async fn update(&self, account: &Account) -> Result<Account> {
         let settings = serde_json::to_value(&account.settings).unwrap_or_default();
         let md = meta_json(&account.metadata);
