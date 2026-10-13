@@ -6,8 +6,30 @@
   color-scheme: light;
 }
 
+html {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
 body {
   background: hsl(210 40% 98%);
   color: hsl(222.2 84% 4.9%);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+::selection {
+  background: hsl(24.6 95% 53.1% / 0.25);
+}
+
+/* Subtle grid backdrop for dark hero sections. */
+.bg-grid-dark {
+  background-image:
+    linear-gradient(to right, rgb(255 255 255 / 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 0.045) 1px, transparent 1px);
+  background-size: 34px 34px;
+}
+
+/* Radial fade used on top of .bg-grid-dark so the grid dissolves toward the edges. */
+.bg-grid-fade {
+  background: radial-gradient(ellipse 80% 60% at 50% 0%, transparent 30%, hsl(240 6 10) 100%);
 }

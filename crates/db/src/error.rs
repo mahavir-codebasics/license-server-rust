@@ -148,11 +148,12 @@ impl Pool {
         .execute(pool)
         .await
         .map_err(map_err)?;
-        let already: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _migrations WHERE version = $1")
-            .bind(crate::migrations::VERSION)
-            .fetch_one(pool)
-            .await
-            .map_err(map_err)?;
+        let already: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM _migrations WHERE version = $1")
+                .bind(crate::migrations::VERSION)
+                .fetch_one(pool)
+                .await
+                .map_err(map_err)?;
         if already > 0 {
             return Ok(());
         }
@@ -178,12 +179,11 @@ impl Pool {
         .execute(pool)
         .await
         .map_err(map_err)?;
-        let already: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM _migrations WHERE version = ?")
-                .bind(crate::migrations::VERSION)
-                .fetch_one(pool)
-                .await
-                .map_err(map_err)?;
+        let already: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _migrations WHERE version = ?")
+            .bind(crate::migrations::VERSION)
+            .fetch_one(pool)
+            .await
+            .map_err(map_err)?;
         if already > 0 {
             return Ok(());
         }

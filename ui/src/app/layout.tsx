@@ -2,8 +2,12 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "license-server",
-  description: "Multi-tenant software licensing & distribution console",
+  title: {
+    default: "license-server — self-hosted software licensing",
+    template: "%s · license-server",
+  },
+  description:
+    "Issue, validate, and manage software licenses. Signed keys, machine binding, policies, webhooks — REST + gRPC, self-hostable.",
 };
 
 export default function RootLayout({
